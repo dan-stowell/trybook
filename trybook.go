@@ -426,6 +426,7 @@ func main() {
 	mux.HandleFunc("/notebook/", notebookHandler)         // GET /notebook/{owner}/{repo}/{notebook_name}
 	mux.HandleFunc("/api/run-prompt/", apiRunPromptHandler) // POST /api/run-prompt/{owner}/{repo}/{notebook_name}
 	mux.HandleFunc("/api/poll-task/", apiPollTaskHandler)   // GET /api/poll-task/{task_id}
+	mux.HandleFunc("/api/summarize-task/", apiSummarizeTaskHandler) // GET /api/summarize-task/{task_id}
 
 	addr := "127.0.0.1:8080"
 
@@ -515,6 +516,27 @@ func runGeminiStreaming(ctx context.Context, worktreePath, prompt string) (*exec
 	}
 
 	return cmd, stdout, stderr, nil
+}
+
+// runGeminiSummary invokes the gemini command with a summarization prompt.
+// It uses the gemini/gemini-2.5-flash model and asks for a single-sentence summary.
+func runGeminiSummary(ctx context.Context, textToSummarize string) (string, error) {
+	if textToSummarize == "" {
+		return "", nil // Nothing to summarize
+	}
+	log.Printf("Running gemini for summary of text length %d", len(textToSummarize))
+
+	prompt := fmt.Sprintf("Summarize the following text in a single, concise sentence:\n\n%s", textToSummarize)
+	
+	cmd := exec.CommandContext(ctx, "gemini", "--model", "gemini/gemini-2.5-flash", "--prompt", prompt)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0") // Avoid interactive prompts
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("Gemini summarization failed: %v\nOutput:\n%s", err, string(out))
+		return "", fmt.Errorf("gemini summarization failed: %w (output: %s)", err, string(out))
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 
@@ -630,6 +652,80 @@ func apiPollTaskHandler(w http.ResponseWriter, r *http.Request) {
 		resp["error"] = task.err.Error()
 	}
 	task.mu.RUnlock()
+
+	json.NewEncoder(w).Encode(resp)
+}
+
+// apiSummarizeTaskHandler returns a summary of a task's status and output.
+func apiSummarizeTaskHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error": "Method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) < 4 || parts[2] != "summarize-task" {
+		http.Error(w, `{"error": "Invalid API URL"}`, http.StatusBadRequest)
+		return
+	}
+	taskID := parts[3]
+
+	tasksMu.RLock()
+	task, ok := tasks[taskID]
+	tasksMu.RUnlock()
+
+	if !ok {
+		http.Error(w, `{"error": "Task not found"}`, http.StatusNotFound)
+		return
+	}
+
+	task.mu.RLock()
+	currentStatus := task.status
+	currentOutput := task.output
+	taskErr := task.err
+	task.mu.RUnlock()
+
+	var summary string
+	if currentOutput != "" {
+		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second) // Give LLM some time
+		defer cancel()
+		s, err := runGeminiSummary(ctx, currentOutput)
+		if err != nil {
+			log.Printf("Failed to generate summary for task %s: %v", taskID, err)
+			summary = "Could not generate summary." // Fallback summary
+		} else {
+			summary = s
+		}
+	} else {
+		summary = "No output available yet."
+	}
+    
+    // Determine overall message based on status for a single sentence summary
+    var statusMessage string
+    switch currentStatus {
+    case "running":
+        statusMessage = "Task is currently running."
+    case "success":
+        statusMessage = "Task completed successfully."
+    case "error":
+        statusMessage = "Task exited with an error."
+        if taskErr != nil {
+            statusMessage = fmt.Sprintf("Task exited with an error: %v", taskErr.Error())
+        }
+    default:
+        statusMessage = "Task status is unknown."
+    }
+
+	resp := map[string]interface{}{
+		"taskId": taskID,
+		"status": currentStatus,
+		"statusMessage": statusMessage,
+		"summary": summary,
+	}
+	if taskErr != nil {
+		resp["error"] = taskErr.Error()
+	}
 
 	json.NewEncoder(w).Encode(resp)
 }
