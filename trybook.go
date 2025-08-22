@@ -51,7 +51,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", indexHandler)
 
-	addr := getAddr()
+	addr := "127.0.0.1:8080"
 
 	srv := &http.Server{
 		Addr:              addr,
@@ -63,7 +63,7 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("trybook listening on http://%s", prettyAddr(addr))
+		log.Printf("trybook listening on http://%s", addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("server error: %v", err)
 		}
@@ -166,19 +166,6 @@ func parseGitHubInput(s string) (string, string, error) {
 	return owner, repo, nil
 }
 
-func getAddr() string {
-	if v := os.Getenv("TRYBOOK_ADDR"); v != "" {
-		return v
-	}
-	if v := os.Getenv("PORT"); v != "" {
-		// support platforms that provide only PORT
-		if strings.HasPrefix(v, ":") {
-			return v
-		}
-		return ":" + v
-	}
-	return "127.0.0.1:8080"
-}
 
 func logRequest(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -188,9 +175,3 @@ func logRequest(next http.Handler) http.Handler {
 	})
 }
 
-func prettyAddr(addr string) string {
-	if strings.HasPrefix(addr, ":") {
-		return "127.0.0.1" + addr
-	}
-	return addr
-}
