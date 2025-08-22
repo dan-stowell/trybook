@@ -281,7 +281,6 @@ func runPromptHandler(w http.ResponseWriter, r *http.Request) {
 	owner := parts[2]
 	repo := parts[3]
 	notebookName := parts[4]
-	repoFullName := owner + "/" + repo
 
 	prompt := r.FormValue("prompt")
 	if prompt == "" {
