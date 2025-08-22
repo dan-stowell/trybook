@@ -175,6 +175,7 @@ const notebookHTML = `<!DOCTYPE html>
       const promptForm = document.getElementById('promptForm');
       const statusMessage = document.getElementById('statusMessage');
       const summaryOutput = document.getElementById('summaryOutput');
+      let isSubmitting = false; // Flag to prevent multiple submissions
 
       function showStatus(message, isError = false) {
         statusMessage.textContent = message;
@@ -194,12 +195,17 @@ const notebookHTML = `<!DOCTYPE html>
       promptForm.addEventListener('submit', async function(event) {
         event.preventDefault(); // Prevent default form submission
 
+        if (isSubmitting) {
+          return; // Prevent multiple submissions
+        }
+
         const prompt = promptInput.value.trim();
         if (!prompt) {
           showStatus("Prompt cannot be empty.", true);
           return;
         }
 
+        isSubmitting = true; // Set flag
         clearSummary();
         showStatus("Gemini is thinking...", false);
         promptInput.disabled = true;
@@ -229,6 +235,7 @@ const notebookHTML = `<!DOCTYPE html>
         } catch (error) {
           showStatus('Request failed: ' + error.message, true);
         } finally {
+          isSubmitting = false; // Reset flag
           promptInput.disabled = false;
           promptForm.querySelector('button[type="submit"]').disabled = false;
           promptInput.focus();
