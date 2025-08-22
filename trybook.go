@@ -555,9 +555,10 @@ func runGeminiSummary(ctx context.Context, textToSummarize string) (string, erro
 	log.Printf("Running gemini for summary of text length %d", len(textToSummarize))
 
 	prompt := fmt.Sprintf("Summarize the following text in a single, concise sentence:\n\n%s", textToSummarize)
-	
+
 	cmd := exec.CommandContext(ctx, "gemini", "--model", "gemini/gemini-2.5-flash", "--prompt", prompt)
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0") // Avoid interactive prompts
+	// Pass through the LLM_GEMINI_KEY environment variable.
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LLM_GEMINI_KEY="+os.Getenv("LLM_GEMINI_KEY"))
 
 	out, err := cmd.CombinedOutput()
 	if err != nil {
