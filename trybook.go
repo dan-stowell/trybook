@@ -270,7 +270,7 @@ func apiSearchHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func searchRepos(ctx context.Context, q string) ([]Repo, error) {
-	cmd := exec.CommandContext(ctx, "gh", "search", "repos", q, "--limit", "5", "--json", "nameWithOwner,description,sshUrl,url,stargazerCount", "--sort", "best-match")
+	cmd := exec.CommandContext(ctx, "gh", "search", "repos", q, "--limit", "5", "--json", "nameWithOwner,description,sshUrl,url,stargazerCount")
 	cmd.Env = append(os.Environ(),
 		"GH_NO_UPDATE_NOTIFIER=1",
 		"GIT_TERMINAL_PROMPT=0",
