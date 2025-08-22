@@ -238,7 +238,6 @@ func parseGitHubInput(s string) (string, string, error) {
 type Repo struct {
 	FullName       string `json:"fullName"`
 	Description    string `json:"description"`
-	SSHURL         string `json:"sshUrl"`
 	URL            string `json:"url"`
 	StargazersCount int    `json:"stargazersCount"`
 }
@@ -270,7 +269,7 @@ func apiSearchHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func searchRepos(ctx context.Context, q string) ([]Repo, error) {
-	cmd := exec.CommandContext(ctx, "gh", "search", "repos", q, "--limit", "5", "--json", "fullName,description,sshUrl,url,stargazersCount")
+	cmd := exec.CommandContext(ctx, "gh", "search", "repos", q, "--limit", "5", "--json", "fullName,description,url,stargazersCount")
 	cmd.Env = append(os.Environ(),
 		"GH_NO_UPDATE_NOTIFIER=1",
 		"GIT_TERMINAL_PROMPT=0",
