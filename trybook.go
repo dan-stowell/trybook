@@ -271,6 +271,7 @@ func apiSearchHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func searchRepos(ctx context.Context, q string) ([]Repo, error) {
+	start := time.Now()
 	cmd := exec.CommandContext(ctx, "gh", "search", "repos", q, "--limit", "5", "--json", "fullName,description,url,stargazersCount")
 	cmd.Env = append(os.Environ(),
 		"GH_NO_UPDATE_NOTIFIER=1",
@@ -278,6 +279,13 @@ func searchRepos(ctx context.Context, q string) ([]Repo, error) {
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			if ctxErr == context.DeadlineExceeded {
+				duration := time.Since(start)
+				return nil, fmt.Errorf("gh search repos timed out after %s: %w", duration, ctxErr)
+			}
+			return nil, fmt.Errorf("gh search repos failed due to context cancellation (%s): %w", ctxErr, err)
+		}
 		return nil, fmt.Errorf("gh search repos failed: %v\n%s", err, string(out))
 	}
 	var repos []Repo
