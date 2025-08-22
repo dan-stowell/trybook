@@ -160,7 +160,7 @@ const notebookHTML = `<!DOCTYPE html>
     <form method="POST" action="/run-prompt/{{.Owner}}/{{.Repo}}/{{.NotebookName}}" style="margin-top: 2rem;">
       <div style="display: flex; flex-direction: column; gap: 0.5rem;">
         <textarea name="prompt" placeholder="question? or tell me to do something" rows="2" style="flex-grow: 1; font-size: 1.25rem; padding: 0.6rem 0.75rem; width: 100%; box-sizing: border-box;"></textarea>
-        <button type="submit" style="font-size: 1.1rem; padding: 0.6rem 1rem; align-self: flex-start;">Run Prompt</button>
+        <button type="submit" style="font-size: 1.1rem; padding: 0.6rem 1rem; align-self: flex-start;">run</button>
       </div>
     </form>
 
