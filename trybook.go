@@ -558,7 +558,15 @@ func runGeminiSummary(ctx context.Context, textToSummarize string) (string, erro
 
 	cmd := exec.CommandContext(ctx, "gemini", "--model", "gemini/gemini-2.5-flash", "--prompt", prompt)
 	// Pass through the LLM_GEMINI_KEY environment variable.
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LLM_GEMINI_KEY="+os.Getenv("LLM_GEMINI_KEY"))
+	// Pass through LLM_GEMINI_KEY only if it's set in the parent environment.
+	// os.Environ() already includes parent environment variables, so we only
+	// explicitly add it here if we want to ensure its presence or override it.
+	geminiKey := os.Getenv("LLM_GEMINI_KEY")
+	if geminiKey != "" {
+		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LLM_GEMINI_KEY="+geminiKey)
+	} else {
+		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	}
 
 	out, err := cmd.CombinedOutput()
 	if err != nil {
