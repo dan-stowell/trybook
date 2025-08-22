@@ -546,32 +546,34 @@ func runGeminiStreaming(ctx context.Context, worktreePath, prompt string) (*exec
 	return cmd, stdout, stderr, nil
 }
 
-// runGeminiSummary invokes the gemini command with a summarization prompt.
-// It uses the gemini/gemini-2.5-flash model and asks for a single-sentence summary.
+// runGeminiSummary invokes the llm command with a summarization prompt.
+// It uses the gpt-5-nano model and asks for a single-sentence summary.
 func runGeminiSummary(ctx context.Context, textToSummarize string) (string, error) {
 	if textToSummarize == "" {
 		return "", nil // Nothing to summarize
 	}
-	log.Printf("Running gemini for summary of text length %d", len(textToSummarize))
+	log.Printf("Running llm for summary of text length %d", len(textToSummarize))
 
-	prompt := fmt.Sprintf("Summarize the following text in a single, concise sentence:\n\n%s", textToSummarize)
+	// Define the command to use 'llm' with 'gpt-5-nano' model and a summarization system prompt.
+	cmd := exec.CommandContext(ctx, "llm", "--model", "gpt-5-nano", "-s", "Please summarize this answer in a single sentence.")
 
-	cmd := exec.CommandContext(ctx, "gemini", "--model", "gemini/gemini-2.5-flash", "--prompt", prompt)
-	// Pass through the LLM_GEMINI_KEY environment variable.
-	// Pass through LLM_GEMINI_KEY only if it's set in the parent environment.
+	// Set up stdin for the llm command to pass the textToSummarize
+	cmd.Stdin = strings.NewReader(textToSummarize)
+
+	// Pass through OPENAI_API_KEY if it's set in the parent environment.
 	// os.Environ() already includes parent environment variables, so we only
 	// explicitly add it here if we want to ensure its presence or override it.
-	geminiKey := os.Getenv("LLM_GEMINI_KEY")
-	if geminiKey != "" {
-		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LLM_GEMINI_KEY="+geminiKey)
+	openaiKey := os.Getenv("OPENAI_API_KEY")
+	if openaiKey != "" {
+		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "OPENAI_API_KEY="+openaiKey)
 	} else {
 		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	}
 
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		log.Printf("Gemini summarization failed: %v\nOutput:\n%s", err, string(out))
-		return "", fmt.Errorf("gemini summarization failed: %w (output: %s)", err, string(out))
+		log.Printf("LLM summarization failed: %v\nOutput:\n%s", err, string(out))
+		return "", fmt.Errorf("llm summarization failed: %w (output: %s)", err, string(out))
 	}
 	return strings.TrimSpace(string(out)), nil
 }
