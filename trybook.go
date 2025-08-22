@@ -185,8 +185,11 @@ const notebookHTML = `<!DOCTYPE html>
       </div>
     </form>
 
-    <div id="statusMessage" style="margin-top: 1rem; color: #555;"></div>
-    <pre id="outputArea" style="margin-top: 1rem; padding: 0.5rem 1rem; background-color: #f7f7f7; border: 1px solid #ddd; border-radius: 4px; white-space: pre-wrap; font-family: monospace; text-align: left;"></pre>
+    <div id="taskLog" style="margin-top: 1rem; padding: 0.5rem 1rem; border: 1px solid #ddd; border-radius: 4px; background-color: #fcfcfc; text-align: left; display: none;">
+      <div id="loggedPrompt" style="margin-bottom: 0.75rem; font-style: italic; color: #666; word-wrap: break-word; display: none;"></div>
+      <div id="statusMessage" style="margin-bottom: 0.5rem; color: #555;"></div>
+      <pre id="outputArea" style="white-space: pre-wrap; font-family: monospace; text-align: left; margin: 0;"></pre>
+    </div>
 
     <script>
     (function() {
@@ -194,20 +197,40 @@ const notebookHTML = `<!DOCTYPE html>
       const promptForm = document.getElementById('promptForm');
       const statusMessage = document.getElementById('statusMessage');
       const outputArea = document.getElementById('outputArea');
+      const taskLog = document.getElementById('taskLog');
+      const loggedPrompt = document.getElementById('loggedPrompt');
       let isSubmitting = false; // Flag to prevent multiple submissions
       let pollingIntervalId = null; // To store the interval ID for polling
+
+      function showTaskLog() { taskLog.style.display = 'block'; }
+      function hideTaskLog() { taskLog.style.display = 'none'; }
 
       function showStatus(message, isError = false) {
         statusMessage.textContent = message;
         statusMessage.style.color = isError ? '#b00020' : '#555';
+        showTaskLog();
       }
 
       function updateOutput(output) {
         outputArea.textContent = output;
+        showTaskLog();
+      }
+
+      function updateLoggedPrompt(promptText) {
+        loggedPrompt.textContent = 'Prompt: "' + promptText + '"';
+        loggedPrompt.style.display = 'block';
+      }
+
+      function clearLoggedPrompt() {
+        loggedPrompt.textContent = '';
+        loggedPrompt.style.display = 'none';
       }
 
       function clearOutput() {
         outputArea.textContent = '';
+        statusMessage.textContent = '';
+        clearLoggedPrompt();
+        hideTaskLog();
       }
 
       function enableForm() {
@@ -276,6 +299,7 @@ const notebookHTML = `<!DOCTYPE html>
 
         disableForm();
         clearOutput();
+        updateLoggedPrompt(prompt);
         showStatus("Starting task...");
 
         let taskId;
@@ -307,6 +331,9 @@ const notebookHTML = `<!DOCTYPE html>
         pollTask(taskId); // Initial poll
         pollingIntervalId = setInterval(() => pollTask(taskId), 1000);
       });
+
+      // Initialize state on page load
+      clearOutput();
     })();
     </script>
 
