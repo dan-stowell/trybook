@@ -12,11 +12,19 @@ import (
 	"os/user"
 	"os/exec"
 	"os/signal"
+	"math/rand"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 )
+
+// r is a global random number generator for generating unique names.
+var r *rand.Rand
+
+func init() {
+	r = rand.New(rand.NewSource(time.Now().UnixNano()))
+}
 
 const indexHTML = `<!DOCTYPE html>
 <html lang="en">
@@ -118,20 +126,47 @@ const repoHTML = `<!DOCTYPE html>
 </head>
 <body style="text-align:center;">
   <h1>trybook</h1>
-  <p>Repository: <strong>{{.RepoName}}</strong></p>
+  <p>Repository: <strong><a href="https://github.com/{{.Owner}}/{{.Repo}}">{{.RepoName}}</a></strong></p>
   <p>Cloned Commit: <code>{{.CommitHash}}</code></p>
+
+  <form method="POST" action="/create-notebook/{{.Owner}}/{{.Repo}}" style="margin-top: 2rem;">
+    <button type="submit" style="font-size: 1.1rem; padding: 0.6rem 1rem;">Create Notebook</button>
+  </form>
+
   {{if .Error}}
   <p style="color: #b00020; font-size: 0.95rem; margin-top: 1rem; white-space: pre-wrap;">Error: {{.Error}}</p>
   {{end}}
-  <p><a href="/">Back to search</a></p>
+  <p style="margin-top: 2rem;"><a href="/">Back to search</a></p>
+</body>
+</html>
+`
+
+const notebookHTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>trybook - {{.NotebookName}}</title>
+</head>
+<body style="text-align:center;">
+  <h1>trybook</h1>
+  <p>Notebook: <strong>{{.NotebookName}}</strong></p>
+  <p>Repository: <strong><a href="https://github.com/{{.Owner}}/{{.Repo}}">{{.RepoName}}</a></strong></p>
+  <p>Branch: <code>{{.BranchName}}</code></p>
+  <p>Worktree Path: <code>{{.WorktreePath}}</code></p>
+  {{if .Error}}
+  <p style="color: #b00020; font-size: 0.95rem; margin-top: 1rem; white-space: pre-wrap;">Error: {{.Error}}</p>
+  {{end}}
+  <p><a href="/repo/{{.Owner}}/{{.Repo}}">Back to repository</a> | <a href="/">Back to search</a></p>
 </body>
 </html>
 `
 
 var (
-	indexTmpl = template.Must(template.New("index").Parse(indexHTML))
-	repoTmpl  = template.Must(template.New("repo").Parse(repoHTML))
-	workDir   string
+	indexTmpl   = template.Must(template.New("index").Parse(indexHTML))
+	repoTmpl    = template.Must(template.New("repo").Parse(repoHTML))
+	notebookTmpl = template.Must(template.New("notebook").Parse(notebookHTML))
+	workDir     string
 )
 
 type IndexData struct {
@@ -141,9 +176,21 @@ type IndexData struct {
 }
 
 type RepoPageData struct {
-	RepoName   string
+	Owner      string
+	Repo       string
+	RepoName   string // owner/repo
 	CommitHash string
 	Error      string
+}
+
+type NotebookPageData struct {
+	Owner        string
+	Repo         string
+	RepoName     string // owner/repo
+	NotebookName string
+	WorktreePath string
+	BranchName   string
+	Error        string
 }
 
 func defaultWorkDir() string {
@@ -161,7 +208,9 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", indexHandler)
 	mux.HandleFunc("/api/search", apiSearchHandler)
-	mux.HandleFunc("/repo/", repoHandler) // Handle /repo/{owner}/{repo}
+	mux.HandleFunc("/repo/", repoHandler)                 // Handle /repo/{owner}/{repo}
+	mux.HandleFunc("/create-notebook/", createNotebookHandler) // POST /create-notebook/{owner}/{repo}
+	mux.HandleFunc("/notebook/", notebookHandler)         // GET /notebook/{owner}/{repo}/{notebook_name}
 
 	addr := "127.0.0.1:8080"
 
@@ -284,6 +333,8 @@ func repoHandler(w http.ResponseWriter, r *http.Request) {
 	repoFullName := owner + "/" + repo
 
 	data := RepoPageData{
+		Owner:    owner,
+		Repo:     repo,
 		RepoName: repoFullName,
 	}
 
@@ -298,6 +349,115 @@ func repoHandler(w http.ResponseWriter, r *http.Request) {
 
 	if err := repoTmpl.Execute(w, data); err != nil {
 		log.Printf("Template execution error for repo page: %v", err)
+		http.Error(w, "template error", http.StatusInternalServerError)
+	}
+}
+
+// generateNotebookName creates a unique name for a notebook/worktree/branch.
+// Format: REPO-DATE-RANDOM_6_CHARS
+func generateNotebookName(repoFullName string) string {
+	date := time.Now().Format("20060102")
+	randomPart := fmt.Sprintf("%x", r.Int63n(1<<24)) // 6 hex characters
+	return fmt.Sprintf("%s-%s-%s", strings.ReplaceAll(repoFullName, "/", "-"), date, randomPart)
+}
+
+// createWorktree adds a new git worktree for a given base repository.
+// It returns the path to the new worktree and any error.
+func createWorktree(ctx context.Context, baseRepoDir, owner, repo, notebookName, branchName string) (string, error) {
+	worktreePath := filepath.Join(workDir, "worktree", owner, repo, notebookName)
+
+	log.Printf("Starting git worktree add for %s on branch %s at %s", notebookName, branchName, worktreePath)
+	opStart := time.Now()
+
+	// git worktree add -b <branch_name> <worktree_path>
+	cmd := exec.CommandContext(ctx, "git", "worktree", "add", "-b", branchName, worktreePath)
+	cmd.Dir = baseRepoDir // Execute command from the base cloned repository
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("Failed git worktree add for %s after %s: %v\n%s", notebookName, time.Since(opStart), err, string(out))
+		return "", fmt.Errorf("git worktree add failed for %s: %v\n%s", notebookName, err, string(out))
+	}
+	log.Printf("Completed git worktree add for %s in %s", notebookName, time.Since(opStart))
+	return worktreePath, nil
+}
+
+func createNotebookHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Expecting URL path like /create-notebook/{owner}/{repo}
+	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) < 4 || parts[1] != "create-notebook" {
+		http.Error(w, "Invalid URL for creating notebook", http.StatusBadRequest)
+		return
+	}
+	owner := parts[2]
+	repo := parts[3]
+	repoFullName := owner + "/" + repo
+
+	// First, ensure the base repository is cloned/pulled
+	baseRepoDir, _, err := manageRepo(r.Context(), repoFullName)
+	if err != nil {
+		log.Printf("Error ensuring base repo for notebook creation %s: %v", repoFullName, err)
+		http.Error(w, fmt.Sprintf("Error preparing base repository: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	notebookName := generateNotebookName(repoFullName)
+	branchName := notebookName // Use notebook name as branch name
+
+	worktreePath, err := createWorktree(r.Context(), baseRepoDir, owner, repo, notebookName, branchName)
+	if err != nil {
+		log.Printf("Error creating worktree for %s/%s: %v", repoFullName, notebookName, err)
+		http.Error(w, fmt.Sprintf("Error creating notebook worktree: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("Successfully created notebook %s (branch %s) at %s", notebookName, branchName, worktreePath)
+	http.Redirect(w, r, fmt.Sprintf("/notebook/%s/%s/%s", owner, repo, notebookName), http.StatusSeeOther)
+}
+
+func notebookHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+	// Expecting URL path like /notebook/{owner}/{repo}/{notebook_name}
+	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) < 5 || parts[1] != "notebook" {
+		http.Error(w, "Invalid notebook URL", http.StatusBadRequest)
+		return
+	}
+	owner := parts[2]
+	repo := parts[3]
+	notebookName := parts[4]
+	repoFullName := owner + "/" + repo
+
+	worktreePath := filepath.Join(workDir, "worktree", owner, repo, notebookName)
+
+	data := NotebookPageData{
+		Owner:        owner,
+		Repo:         repo,
+		RepoName:     repoFullName,
+		NotebookName: notebookName,
+		WorktreePath: worktreePath,
+		BranchName:   notebookName, // The branch name is the same as the notebook name
+	}
+
+	// Verify the worktree directory actually exists
+	_, err := os.Stat(worktreePath)
+	if os.IsNotExist(err) {
+		data.Error = fmt.Sprintf("Notebook worktree not found at %s", worktreePath)
+		log.Printf("Notebook worktree not found: %s", worktreePath)
+	} else if err != nil {
+		data.Error = fmt.Sprintf("Error accessing worktree path %s: %v", worktreePath, err)
+		log.Printf("Error accessing worktree path %s: %v", worktreePath, err)
+	}
+
+	if err := notebookTmpl.Execute(w, data); err != nil {
+		log.Printf("Template execution error for notebook page: %v", err)
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
 }
