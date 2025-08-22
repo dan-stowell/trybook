@@ -6,10 +6,10 @@ import (
 	"net/http"
 )
 
-//go:embed index.html
-var indexHTML string
+	//go:embed index.html
+	var indexFS embed.FS
 
-var indexTmpl = template.Must(template.New("index").Parse(indexHTML))
+	var indexTmpl = template.Must(template.ParseFS(indexFS, "index.html"))
 
 func indexHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
