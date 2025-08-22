@@ -150,11 +150,12 @@ const notebookHTML = `<!DOCTYPE html>
 </head>
 <body>
   <div style="max-width: 60rem; margin: 0 auto; padding: 1rem; text-align: left;">
-    <h1>trybook</h1>
-    <p>Notebook: <strong>{{.NotebookName}}</strong></p>
-    <p>Repository: <strong><a href="https://github.com/{{.Owner}}/{{.Repo}}">{{.RepoName}}</a></strong></p>
-    <p>Branch: <code>{{.BranchName}}</code></p>
-    <p>Worktree Path: <code>{{.WorktreePath}}</code></p>
+    <h1>{{.NotebookName}}</h1>
+    <div style="margin-bottom: 1.5rem; padding: 0.5rem 1rem; background-color: #f8f8f8; border: 1px solid #eee; border-radius: 4px; font-size: 0.9rem;">
+      <p style="margin: 0.2rem 0;">Repository: <strong><a href="https://github.com/{{.Owner}}/{{.Repo}}">{{.RepoName}}</a></strong></p>
+      <p style="margin: 0.2rem 0;">Branch: <code>{{.BranchName}}</code></p>
+      <p style="margin: 0.2rem 0;">Worktree Path: <code>{{.WorktreePath}}</code></p>
+    </div>
 
     <form method="POST" action="/run-prompt/{{.Owner}}/{{.Repo}}/{{.NotebookName}}" style="margin-top: 2rem;">
       <div style="display: flex; flex-direction: column; gap: 0.5rem;">
