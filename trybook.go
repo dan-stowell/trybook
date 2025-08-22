@@ -306,7 +306,7 @@ const notebookHTML = `<!DOCTYPE html>
           }
 
           // 3. Update UI based on combined information
-          // The `pollData.status` is the authoritative source for task completion.
+          // The pollData.status is the authoritative source for task completion.
           switch (pollData.status) {
             case 'running':
               setTaskLogStyle('running');
