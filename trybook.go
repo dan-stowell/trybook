@@ -226,10 +226,32 @@ const notebookHTML = `<!DOCTYPE html>
         loggedPrompt.style.display = 'none';
       }
 
+      function setTaskLogStyle(statusType) {
+        switch (statusType) {
+          case 'running':
+            taskLog.style.backgroundColor = '#fff3e0'; // Light orange background
+            taskLog.style.borderColor = '#ff9800';   // Sharper orange border
+            break;
+          case 'success':
+            taskLog.style.backgroundColor = '#e8f5e9'; // Light green background
+            taskLog.style.borderColor = '#4caf50';   // Sharper green border
+            break;
+          case 'error':
+            taskLog.style.backgroundColor = '#ffebee'; // Light red background
+            taskLog.style.borderColor = '#f44336';   // Sharper red border
+            break;
+          default: // Default or initial state
+            taskLog.style.backgroundColor = '#fcfcfc';
+            taskLog.style.borderColor = '#ddd';
+            break;
+        }
+      }
+
       function clearOutput() {
         outputArea.textContent = '';
         statusMessage.textContent = '';
         clearLoggedPrompt();
+        setTaskLogStyle('default'); // Reset style to default
         hideTaskLog();
       }
 
@@ -259,25 +281,30 @@ const notebookHTML = `<!DOCTYPE html>
 
           switch (data.status) {
             case 'running':
+              setTaskLogStyle('running');
               showStatus("Task running...");
               break;
             case 'success':
+              setTaskLogStyle('success');
               showStatus("Task completed successfully.", false);
               clearInterval(pollingIntervalId);
               enableForm();
               break;
             case 'error':
+              setTaskLogStyle('error');
               showStatus("Task error: " + (data.error || "Unknown error"), true);
               clearInterval(pollingIntervalId);
               enableForm();
               break;
             default:
+              setTaskLogStyle('default'); // Fallback to default for unknown states
               showStatus("Unknown task status: " + data.status, true);
               clearInterval(pollingIntervalId);
               enableForm();
           }
 
         } catch (error) {
+          setTaskLogStyle('error'); // Set error style for polling failures
           showStatus('Polling failed: ' + error.message, true);
           clearInterval(pollingIntervalId);
           enableForm();
@@ -298,9 +325,10 @@ const notebookHTML = `<!DOCTYPE html>
         }
 
         disableForm();
-        clearOutput();
+        clearOutput(); // This will also reset the style to default
         updateLoggedPrompt(prompt);
-        showStatus("Starting task...");
+        setTaskLogStyle('running'); // Set running style immediately
+        showStatus("Starting task..."); // Update text status
 
         let taskId;
         try {
@@ -315,6 +343,7 @@ const notebookHTML = `<!DOCTYPE html>
           }
           taskId = data.taskId;
         } catch (error) {
+          setTaskLogStyle('error'); // Set error style for task start failures
           showStatus('Error starting task: ' + error.message, true);
           enableForm();
           return;
