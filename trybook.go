@@ -157,21 +157,81 @@ const notebookHTML = `<!DOCTYPE html>
       <p style="margin: 0.2rem 0;">Worktree Path: <code>{{.WorktreePath}}</code></p>
     </div>
 
-    <form id="promptForm" method="POST" action="/run-prompt/{{.Owner}}/{{.Repo}}/{{.NotebookName}}" style="margin-top: 2rem;">
+    <form id="promptForm" method="POST" action="/api/run-prompt/{{.Owner}}/{{.Repo}}/{{.NotebookName}}" style="margin-top: 2rem;">
       <div style="display: flex; gap: 0.5rem;">
         <input type="text" id="promptInput" name="prompt" placeholder="question? or tell me to do something" style="flex-grow: 1; font-size: 1.25rem; padding: 0.6rem 0.75rem; box-sizing: border-box;">
         <button type="submit" style="font-size: 1.1rem; padding: 0.6rem 1rem;">run</button>
       </div>
     </form>
 
+    <div id="statusMessage" style="margin-top: 1rem; color: #555;">{{.ThinkingMessage}}</div>
+    <div id="summaryOutput" style="margin-top: 1rem; padding: 0.5rem 1rem; background-color: #e6ffe6; border: 1px solid #ccffcc; border-radius: 4px; display: {{if .Summary}}block{{else}}none{{end}};">
+        <strong>Summary:</strong> {{.Summary}}
+    </div>
+
     <script>
     (function() {
       const promptInput = document.getElementById('promptInput');
       const promptForm = document.getElementById('promptForm');
-      promptInput.addEventListener('keydown', function(event) {
-        if (event.key === 'Enter') {
-          event.preventDefault(); // Prevent default action (e.g., newline in a textarea, though input doesn't need this)
-          promptForm.submit();
+      const statusMessage = document.getElementById('statusMessage');
+      const summaryOutput = document.getElementById('summaryOutput');
+
+      function showStatus(message, isError = false) {
+        statusMessage.textContent = message;
+        statusMessage.style.color = isError ? '#b00020' : '#555';
+      }
+
+      function showSummary(summary) {
+        summaryOutput.querySelector('strong').nextSibling.textContent = ' ' + summary;
+        summaryOutput.style.display = 'block';
+      }
+
+      function clearSummary() {
+        summaryOutput.querySelector('strong').nextSibling.textContent = '';
+        summaryOutput.style.display = 'none';
+      }
+
+      promptForm.addEventListener('submit', async function(event) {
+        event.preventDefault(); // Prevent default form submission
+
+        const prompt = promptInput.value.trim();
+        if (!prompt) {
+          showStatus("Prompt cannot be empty.", true);
+          return;
+        }
+
+        clearSummary();
+        showStatus("Gemini is thinking...", false);
+        promptInput.disabled = true;
+        promptForm.querySelector('button[type="submit"]').disabled = true;
+
+        try {
+          const response = await fetch(promptForm.action, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: new URLSearchParams({ prompt: prompt }).toString(),
+          });
+
+          const data = await response.json();
+
+          if (!response.ok) {
+            showStatus('Error: ' + (data.error || 'Unknown server error'), true);
+          } else {
+            showStatus("Gemini is done.", false);
+            if (data.summary) {
+              showSummary(data.summary);
+            } else {
+              showStatus("No summary returned.", true);
+            }
+          }
+        } catch (error) {
+          showStatus('Request failed: ' + error.message, true);
+        } finally {
+          promptInput.disabled = false;
+          promptForm.querySelector('button[type="submit"]').disabled = false;
+          promptInput.focus();
         }
       });
     })();
@@ -208,13 +268,15 @@ type RepoPageData struct {
 }
 
 type NotebookPageData struct {
-	Owner        string
-	Repo         string
-	RepoName     string // owner/repo
-	NotebookName string
-	WorktreePath string
-	BranchName   string
-	Error        string
+	Owner         string
+	Repo          string
+	RepoName      string // owner/repo
+	NotebookName  string
+	WorktreePath  string
+	BranchName    string
+	Summary       string // The last generated summary
+	ThinkingMessage string // Message to display while processing
+	Error         string
 }
 
 func defaultWorkDir() string {
@@ -235,7 +297,7 @@ func main() {
 	mux.HandleFunc("/repo/", repoHandler)                 // Handle /repo/{owner}/{repo}
 	mux.HandleFunc("/create-notebook/", createNotebookHandler) // POST /create-notebook/{owner}/{repo}
 	mux.HandleFunc("/notebook/", notebookHandler)         // GET /notebook/{owner}/{repo}/{notebook_name}
-	mux.HandleFunc("/run-prompt/", runPromptHandler)      // POST /run-prompt/{owner}/{repo}/{notebook_name}
+	mux.HandleFunc("/api/run-prompt/", apiRunPromptHandler)      // POST /api/run-prompt/{owner}/{repo}/{notebook_name}
 
 	addr := "127.0.0.1:8080"
 
@@ -280,33 +342,100 @@ func indexHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func runPromptHandler(w http.ResponseWriter, r *http.Request) {
+// runCommandInWorktree executes a command within the specified worktree directory.
+// It returns stdout, stderr, and any error.
+func runCommandInWorktree(ctx context.Context, worktreePath, name string, arg ...string) (string, string, error) {
+	cmd := exec.CommandContext(ctx, name, arg...)
+	cmd.Dir = worktreePath
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0") // Avoid interactive prompts
+
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if err != nil {
+		return stdout.String(), stderr.String(), fmt.Errorf("command %q failed: %w (stdout: %s, stderr: %s)", name, err, stdout.String(), stderr.String())
+	}
+	return stdout.String(), stderr.String(), nil
+}
+
+// runGemini invokes the gemini command with the given prompt in the worktree.
+func runGemini(ctx context.Context, worktreePath, prompt string) (stdout, stderr string, err error) {
+	log.Printf("Running gemini for worktree %s with prompt: %s", worktreePath, prompt)
+	return runCommandInWorktree(ctx, worktreePath, "gemini", "--prompt", prompt)
+}
+
+// summarizeOutput uses llm to summarize the given output.
+func summarizeOutput(ctx context.Context, output string) (string, error) {
+	summaryPrompt := fmt.Sprintf("Please summarize this output in a single sentence: %s", output)
+	log.Printf("Running llm to summarize output (first 100 chars): %q...", output[:min(100, len(output))])
+	stdout, stderr, err := runCommandInWorktree(ctx, "", "llm", "--model", "gpt-5-nano", summaryPrompt)
+	if err != nil {
+		return "", fmt.Errorf("llm summarization failed: %w (stderr: %s)", err, stderr)
+	}
+	return strings.TrimSpace(stdout), nil
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func apiRunPromptHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Expecting URL path like /run-prompt/{owner}/{repo}/{notebook_name}
+	// Expecting URL path like /api/run-prompt/{owner}/{repo}/{notebook_name}
 	parts := strings.Split(r.URL.Path, "/")
-	if len(parts) < 5 || parts[1] != "run-prompt" {
-		http.Error(w, "Invalid URL for running prompt", http.StatusBadRequest)
+	if len(parts) < 5 || parts[1] != "api" || parts[2] != "run-prompt" {
+		http.Error(w, "Invalid API URL for running prompt", http.StatusBadRequest)
 		return
 	}
-	owner := parts[2]
-	repo := parts[3]
-	notebookName := parts[4]
+	owner := parts[3]
+	repo := parts[4]
+	notebookName := parts[5]
 
 	prompt := r.FormValue("prompt")
 	if prompt == "" {
-		http.Error(w, "Prompt cannot be empty", http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Prompt cannot be empty"})
 		return
 	}
 
-	log.Printf("Received prompt for notebook %s/%s in worktree %s: %s", owner, repo, notebookName, prompt)
+	worktreePath := filepath.Join(workDir, "worktree", owner, repo, notebookName)
+	if _, err := os.Stat(worktreePath); os.IsNotExist(err) {
+		log.Printf("Worktree path does not exist: %s", worktreePath)
+		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("Worktree not found at %s", worktreePath)})
+		return
+	}
 
-	// For now, just redirect back to the notebook page, perhaps with a success message or results in the future.
-	http.Redirect(w, r, fmt.Sprintf("/notebook/%s/%s/%s", owner, repo, notebookName), http.StatusSeeOther)
+	// Run gemini
+	geminiStdout, geminiStderr, err := runGemini(r.Context(), worktreePath, prompt)
+	combinedOutput := geminiStdout + "\n" + geminiStderr // Combine for summarization
+
+	if err != nil {
+		log.Printf("Gemini command failed for %s/%s/%s: %v", owner, repo, notebookName, err)
+		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("Gemini command failed: %v", err)})
+		return
+	}
+
+	// Summarize gemini's output using llm
+	summary, err := summarizeOutput(r.Context(), combinedOutput)
+	if err != nil {
+		log.Printf("LLM summarization failed for %s/%s/%s: %v", owner, repo, notebookName, err)
+		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("Summarization failed: %v", err)})
+		return
+	}
+
+	log.Printf("Successfully processed prompt for %s/%s/%s. Summary: %s", owner, repo, notebookName, summary)
+	json.NewEncoder(w).Encode(map[string]string{"summary": summary})
 }
+
 
 // getHeadCommit returns the SHA of the HEAD commit in the given repo directory.
 func getHeadCommit(ctx context.Context, repoDir string) (string, error) {
