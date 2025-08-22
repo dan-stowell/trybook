@@ -290,9 +290,18 @@ const notebookHTML = `<!DOCTYPE html>
             console.error('Failed to fetch task summary:', summarizeData.error || 'Unknown error');
             displayStatusMessage = 'Could not fetch summary: ' + (summarizeData.error || 'Unknown error');
           } else {
-            displayStatusMessage = summarizeData.statusMessage;
-            if (summarizeData.summary && summarizeData.summary !== "No output available yet.") {
-                displayStatusMessage += " " + summarizeData.summary;
+            // Check if there's a meaningful summary
+            const hasSummary = summarizeData.summary && summarizeData.summary !== "No output available yet.";
+
+            // If task is running and we have a summary, use the more concise "Running..."
+            if (pollData.status === 'running' && hasSummary) {
+                displayStatusMessage = "Running... " + summarizeData.summary;
+            } else {
+                // Otherwise, use the server-provided status message and append summary if available
+                displayStatusMessage = summarizeData.statusMessage;
+                if (hasSummary) {
+                    displayStatusMessage += " " + summarizeData.summary;
+                }
             }
           }
 
