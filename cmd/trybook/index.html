@@ -8,8 +8,15 @@
 <body style="text-align:center;">
   <h1>trybook</h1>
   <form method="GET" action="/">
-    <input type="url" id="repoUrl" name="repo" placeholder="https://github.com/owner/repo or owner/repo" autofocus style="font-size: 1.25rem; padding: 0.6rem 0.75rem;">
+    <input type="url" id="repoUrl" name="repo" placeholder="https://github.com/owner/repo or owner/repo" value="{{.Query}}" autofocus style="font-size: 1.25rem; padding: 0.6rem 0.75rem;">
     <button type="submit" style="font-size: 1.1rem; padding: 0.6rem 1rem;">Open</button>
   </form>
+
+  {{if .Error}}
+  <p style="color: #b00020; font-size: 0.95rem; margin-top: 1rem; white-space: pre-wrap;">Error: {{.Error}}</p>
+  {{end}}
+  {{if .Result}}
+  <p style="color: #0a7; font-size: 0.95rem; margin-top: 1rem; white-space: pre-wrap;">{{.Result}}</p>
+  {{end}}
 </body>
 </html>
