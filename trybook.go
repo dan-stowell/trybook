@@ -236,11 +236,11 @@ func parseGitHubInput(s string) (string, string, error) {
 
 
 type Repo struct {
-	NameWithOwner  string `json:"nameWithOwner"`
+	FullName       string `json:"fullName"`
 	Description    string `json:"description"`
 	SSHURL         string `json:"sshUrl"`
 	URL            string `json:"url"`
-	StargazerCount int    `json:"stargazerCount"`
+	StargazersCount int    `json:"stargazersCount"`
 }
 
 func apiSearchHandler(w http.ResponseWriter, r *http.Request) {
