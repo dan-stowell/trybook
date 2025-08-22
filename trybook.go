@@ -25,7 +25,7 @@ const indexHTML = `<!DOCTYPE html>
 <body style="text-align:center;">
   <h1>trybook</h1>
   <form method="GET" action="/">
-    <input type="url" id="repoUrl" name="repo" placeholder="https://github.com/owner/repo or owner/repo" value="{{.Query}}" autofocus style="font-size: 1.25rem; padding: 0.6rem 0.75rem;">
+    <input type="url" id="repoUrl" name="repo" placeholder="github repo" value="{{.Query}}" autofocus style="font-size: 1.25rem; padding: 0.6rem 0.75rem;">
     <button type="submit" style="font-size: 1.1rem; padding: 0.6rem 1rem;">Open</button>
   </form>
 
