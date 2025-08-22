@@ -148,16 +148,26 @@ const notebookHTML = `<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>trybook - {{.NotebookName}}</title>
 </head>
-<body style="text-align:center;">
-  <h1>trybook</h1>
-  <p>Notebook: <strong>{{.NotebookName}}</strong></p>
-  <p>Repository: <strong><a href="https://github.com/{{.Owner}}/{{.Repo}}">{{.RepoName}}</a></strong></p>
-  <p>Branch: <code>{{.BranchName}}</code></p>
-  <p>Worktree Path: <code>{{.WorktreePath}}</code></p>
-  {{if .Error}}
-  <p style="color: #b00020; font-size: 0.95rem; margin-top: 1rem; white-space: pre-wrap;">Error: {{.Error}}</p>
-  {{end}}
-  <p><a href="/repo/{{.Owner}}/{{.Repo}}">Back to repository</a> | <a href="/">Back to search</a></p>
+<body>
+  <div style="max-width: 60rem; margin: 0 auto; padding: 1rem; text-align: left;">
+    <h1>trybook</h1>
+    <p>Notebook: <strong>{{.NotebookName}}</strong></p>
+    <p>Repository: <strong><a href="https://github.com/{{.Owner}}/{{.Repo}}">{{.RepoName}}</a></strong></p>
+    <p>Branch: <code>{{.BranchName}}</code></p>
+    <p>Worktree Path: <code>{{.WorktreePath}}</code></p>
+
+    <form method="POST" action="/run-prompt/{{.Owner}}/{{.Repo}}/{{.NotebookName}}" style="margin-top: 2rem;">
+      <div style="display: flex; flex-direction: column; gap: 0.5rem;">
+        <textarea name="prompt" placeholder="Enter your prompt here..." rows="10" style="flex-grow: 1; font-size: 1.25rem; padding: 0.6rem 0.75rem; width: 100%; box-sizing: border-box;"></textarea>
+        <button type="submit" style="font-size: 1.1rem; padding: 0.6rem 1rem; align-self: flex-start;">Run Prompt</button>
+      </div>
+    </form>
+
+    {{if .Error}}
+    <p style="color: #b00020; font-size: 0.95rem; margin-top: 1rem; white-space: pre-wrap;">Error: {{.Error}}</p>
+    {{end}}
+    <p style="margin-top: 2rem;"><a href="/repo/{{.Owner}}/{{.Repo}}">Back to repository</a> | <a href="/">Back to search</a></p>
+  </div>
 </body>
 </html>
 `
@@ -211,6 +221,7 @@ func main() {
 	mux.HandleFunc("/repo/", repoHandler)                 // Handle /repo/{owner}/{repo}
 	mux.HandleFunc("/create-notebook/", createNotebookHandler) // POST /create-notebook/{owner}/{repo}
 	mux.HandleFunc("/notebook/", notebookHandler)         // GET /notebook/{owner}/{repo}/{notebook_name}
+	mux.HandleFunc("/run-prompt/", runPromptHandler)      // POST /run-prompt/{owner}/{repo}/{notebook_name}
 
 	addr := "127.0.0.1:8080"
 
@@ -253,6 +264,35 @@ func indexHandler(w http.ResponseWriter, r *http.Request) {
 	if err := indexTmpl.Execute(w, data); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
+}
+
+func runPromptHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Expecting URL path like /run-prompt/{owner}/{repo}/{notebook_name}
+	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) < 5 || parts[1] != "run-prompt" {
+		http.Error(w, "Invalid URL for running prompt", http.StatusBadRequest)
+		return
+	}
+	owner := parts[2]
+	repo := parts[3]
+	notebookName := parts[4]
+	repoFullName := owner + "/" + repo
+
+	prompt := r.FormValue("prompt")
+	if prompt == "" {
+		http.Error(w, "Prompt cannot be empty", http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("Received prompt for notebook %s/%s in worktree %s: %s", owner, repo, notebookName, prompt)
+
+	// For now, just redirect back to the notebook page, perhaps with a success message or results in the future.
+	http.Redirect(w, r, fmt.Sprintf("/notebook/%s/%s/%s", owner, repo, notebookName), http.StatusSeeOther)
 }
 
 // getHeadCommit returns the SHA of the HEAD commit in the given repo directory.
