@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"html/template"
 	"log"
 	"net/http"
 	"os"
+	"os/user"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
@@ -108,7 +110,10 @@ const indexHTML = `<!DOCTYPE html>
 </html>
 `
 
-var indexTmpl = template.Must(template.New("index").Parse(indexHTML))
+var (
+	indexTmpl = template.Must(template.New("index").Parse(indexHTML))
+	workDir   string
+)
 
 type IndexData struct {
 	Query  string
@@ -116,7 +121,18 @@ type IndexData struct {
 	Error  string
 }
 
+func defaultWorkDir() string {
+	usr, err := user.Current()
+	if err != nil {
+		log.Fatalf("could not get current user: %v", err)
+	}
+	return filepath.Join(usr.HomeDir, ".trybook")
+}
+
 func main() {
+	flag.StringVar(&workDir, "workdir", defaultWorkDir(), "working directory for repo clones")
+	flag.Parse()
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", indexHandler)
 	mux.HandleFunc("/api/search", apiSearchHandler)
@@ -160,11 +176,11 @@ func indexHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if data.Query != "" {
-		dir, err := cloneDefaultBranch(r.Context(), data.Query)
+		dir, err := manageRepo(r.Context(), data.Query)
 		if err != nil {
 			data.Error = err.Error()
 		} else {
-			data.Result = fmt.Sprintf("Cloned default branch to %s", dir)
+			data.Result = fmt.Sprintf("Managed repository at %s", dir)
 		}
 	}
 
@@ -173,33 +189,44 @@ func indexHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func cloneDefaultBranch(ctx context.Context, input string) (string, error) {
+func manageRepo(ctx context.Context, input string) (string, error) {
 	owner, repo, err := parseGitHubInput(input)
 	if err != nil {
 		return "", err
 	}
 
+	repoDir := filepath.Join(workDir, "clone", owner, repo)
 	sshURL := "ssh://git@github.com/" + owner + "/" + repo
 
-	// Timeout the clone to avoid hanging connections.
+	// Timeout the git operation to avoid hanging connections.
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
-	// Create a unique parent temp dir and clone into a subdir with repo name.
-	parent, err := os.MkdirTemp("", "trybook-")
-	if err != nil {
-		return "", fmt.Errorf("create temp dir: %w", err)
-	}
-	dest := filepath.Join(parent, repo)
+	var cmd *exec.Cmd
+	var operation string
 
-	cmd := exec.CommandContext(ctx, "git", "clone", "--depth=1", "--single-branch", sshURL, dest)
+	_, err = os.Stat(repoDir)
+	if err == nil { // Directory exists, perform pull
+		operation = "git pull"
+		cmd = exec.CommandContext(ctx, "git", "pull")
+		cmd.Dir = repoDir // Set working directory for pull
+	} else if os.IsNotExist(err) { // Directory does not exist, perform clone
+		operation = "git clone"
+		if err := os.MkdirAll(repoDir, 0o755); err != nil {
+			return "", fmt.Errorf("create repo directory %q: %w", repoDir, err)
+		}
+		cmd = exec.CommandContext(ctx, "git", "clone", "--depth=1", "--single-branch", sshURL, repoDir)
+	} else {
+		return "", fmt.Errorf("stat %q: %w", repoDir, err)
+	}
+
 	// Avoid interactive prompts in server context.
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("git clone failed: %v\n%s", err, string(out))
+		return "", fmt.Errorf("%s failed: %v\n%s", operation, err, string(out))
 	}
-	return dest, nil
+	return repoDir, nil
 }
 
 func parseGitHubInput(s string) (string, string, error) {
