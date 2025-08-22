@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"html/template"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -15,6 +17,7 @@ import (
 	"math/rand"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -192,7 +195,7 @@ const notebookHTML = `<!DOCTYPE html>
         summaryOutput.style.display = 'none';
       }
 
-      promptForm.addEventListener('submit', async function(event) {
+      promptForm.addEventListener('submit', function(event) {
         event.preventDefault(); // Prevent default form submission
 
         if (isSubmitting) {
@@ -211,35 +214,43 @@ const notebookHTML = `<!DOCTYPE html>
         promptInput.disabled = true;
         promptForm.querySelector('button[type="submit"]').disabled = true;
 
-        try {
-          const response = await fetch(promptForm.action, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/x-www-form-urlencoded',
-            },
-            body: new URLSearchParams({ prompt: prompt }).toString(),
-          });
+        const eventSource = new EventSource(promptForm.action + '?prompt=' + encodeURIComponent(prompt));
 
-          const data = await response.json();
+        eventSource.onmessage = function(event) {
+          const data = JSON.parse(event.data);
 
-          if (!response.ok) {
-            showStatus('Error: ' + (data.error || 'Unknown server error'), true);
-          } else {
-            showStatus("Gemini is done.", false);
-            if (data.summary) {
-              showSummary(data.summary);
-            } else {
-              showStatus("No summary returned.", true);
-            }
+          if (data.error) {
+            showStatus('Error: ' + data.error, true);
+            eventSource.close();
+            isSubmitting = false;
+            promptInput.disabled = false;
+            promptForm.querySelector('button[type="submit"]').disabled = false;
+            promptInput.focus();
+            return;
           }
-        } catch (error) {
-          showStatus('Request failed: ' + error.message, true);
-        } finally {
-          isSubmitting = false; // Reset flag
+
+          if (data.summary) {
+            showSummary(data.summary);
+          }
+
+          if (data.done) {
+            showStatus("Gemini is done.", false);
+            eventSource.close();
+            isSubmitting = false;
+            promptInput.disabled = false;
+            promptForm.querySelector('button[type="submit"]').disabled = false;
+            promptInput.focus();
+          }
+        };
+
+        eventSource.onerror = function(e) {
+          showStatus('Request failed: connection error to server.', true);
+          eventSource.close();
+          isSubmitting = false;
           promptInput.disabled = false;
           promptForm.querySelector('button[type="submit"]').disabled = false;
           promptInput.focus();
-        }
+        };
       });
     })();
     </script>
@@ -373,6 +384,29 @@ func runGemini(ctx context.Context, worktreePath, prompt string) (stdout, stderr
 	return runCommandInWorktree(ctx, worktreePath, "gemini", "--prompt", prompt)
 }
 
+// runGeminiStreaming starts the gemini command and returns pipes to its stdout and stderr.
+func runGeminiStreaming(ctx context.Context, worktreePath, prompt string) (*exec.Cmd, io.ReadCloser, io.ReadCloser, error) {
+	log.Printf("Streaming gemini for worktree %s with prompt: %s", worktreePath, prompt)
+	cmd := exec.CommandContext(ctx, "gemini", "--prompt", prompt)
+	cmd.Dir = worktreePath
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("getting stdout pipe: %w", err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("getting stderr pipe: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return nil, nil, nil, fmt.Errorf("starting gemini command: %w", err)
+	}
+
+	return cmd, stdout, stderr, nil
+}
+
 // summarizeOutput uses llm to summarize the given output.
 func summarizeOutput(ctx context.Context, output string) (string, error) {
 	summaryPrompt := fmt.Sprintf("Please summarize this output in a single sentence: %s", output)
@@ -392,15 +426,9 @@ func min(a, b int) int {
 }
 
 func apiRunPromptHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
 	// Expecting URL path like /api/run-prompt/{owner}/{repo}/{notebook_name}
 	parts := strings.Split(r.URL.Path, "/")
-	if len(parts) < 5 || parts[1] != "api" || parts[2] != "run-prompt" {
+	if len(parts) < 6 || parts[1] != "api" || parts[2] != "run-prompt" {
 		http.Error(w, "Invalid API URL for running prompt", http.StatusBadRequest)
 		return
 	}
@@ -408,39 +436,110 @@ func apiRunPromptHandler(w http.ResponseWriter, r *http.Request) {
 	repo := parts[4]
 	notebookName := parts[5]
 
-	prompt := r.FormValue("prompt")
+	prompt := r.URL.Query().Get("prompt")
 	if prompt == "" {
-		json.NewEncoder(w).Encode(map[string]string{"error": "Prompt cannot be empty"})
+		http.Error(w, "Prompt cannot be empty", http.StatusBadRequest)
 		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming unsupported!", http.StatusInternalServerError)
+		return
+	}
+
+	sendJSON := func(data map[string]interface{}) {
+		jsonData, _ := json.Marshal(data)
+		fmt.Fprintf(w, "data: %s\n\n", jsonData)
+		flusher.Flush()
 	}
 
 	worktreePath := filepath.Join(workDir, "worktree", owner, repo, notebookName)
 	if _, err := os.Stat(worktreePath); os.IsNotExist(err) {
 		log.Printf("Worktree path does not exist: %s", worktreePath)
-		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("Worktree not found at %s", worktreePath)})
+		sendJSON(map[string]interface{}{"error": "Worktree not found"})
 		return
 	}
 
-	// Run gemini
-	geminiStdout, geminiStderr, err := runGemini(r.Context(), worktreePath, prompt)
-	combinedOutput := geminiStdout + "\n" + geminiStderr // Combine for summarization
-
+	cmd, stdoutPipe, stderrPipe, err := runGeminiStreaming(r.Context(), worktreePath, prompt)
 	if err != nil {
-		log.Printf("Gemini command failed for %s/%s/%s: %v", owner, repo, notebookName, err)
-		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("Gemini command failed: %v", err)})
+		log.Printf("Starting Gemini command failed for %s/%s/%s: %v", owner, repo, notebookName, err)
+		sendJSON(map[string]interface{}{"error": "Failed to start gemini"})
 		return
 	}
 
-	// Summarize gemini's output using llm
-	summary, err := summarizeOutput(r.Context(), combinedOutput)
-	if err != nil {
-		log.Printf("LLM summarization failed for %s/%s/%s: %v", owner, repo, notebookName, err)
-		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("Summarization failed: %v", err)})
-		return
-	}
+	var mu sync.Mutex
+	var combinedOutput strings.Builder
 
-	log.Printf("Successfully processed prompt for %s/%s/%s. Summary: %s", owner, repo, notebookName, summary)
-	json.NewEncoder(w).Encode(map[string]string{"summary": summary})
+	// Goroutine to read from stdout and stderr
+	go func() {
+		scanner := bufio.NewScanner(io.MultiReader(stdoutPipe, stderrPipe))
+		for scanner.Scan() {
+			mu.Lock()
+			combinedOutput.WriteString(scanner.Text() + "\n")
+			mu.Unlock()
+		}
+	}()
+
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	doneChan := make(chan error, 1)
+	go func() {
+		doneChan <- cmd.Wait()
+	}()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			log.Println("Client disconnected, stopping gemini.")
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+			}
+			return
+		case err := <-doneChan:
+			mu.Lock()
+			output := combinedOutput.String()
+			mu.Unlock()
+
+			summary, sErr := summarizeOutput(context.Background(), output)
+			if sErr != nil {
+				log.Printf("LLM final summarization failed for %s: %v", notebookName, sErr)
+				sendJSON(map[string]interface{}{"error": "Final summarization failed."})
+			} else {
+				log.Printf("Final summary for %s: %s", notebookName, summary)
+				sendJSON(map[string]interface{}{"summary": summary, "done": true})
+			}
+
+			if err != nil {
+				log.Printf("Gemini command for %s finished with error: %v", notebookName, err)
+			} else {
+				log.Printf("Gemini command for %s finished successfully.", notebookName)
+			}
+			return
+		case <-ticker.C:
+			mu.Lock()
+			output := combinedOutput.String()
+			mu.Unlock()
+
+			if len(output) > 0 {
+				// Use a timeout for periodic summarization to avoid getting stuck
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				summary, err := summarizeOutput(ctx, output)
+				cancel()
+				if err != nil {
+					log.Printf("Periodic summarization failed for %s: %v", notebookName, err)
+				} else {
+					log.Printf("Periodic summary for %s: %s", notebookName, summary)
+					sendJSON(map[string]interface{}{"summary": summary})
+				}
+			}
+		}
+	}
 }
 
 
