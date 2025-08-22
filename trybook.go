@@ -144,6 +144,25 @@ const repoHTML = `<!DOCTYPE html>
 </html>
 `
 
+// Task represents a long-running gemini process.
+type Task struct {
+	mu     sync.RWMutex
+	// output stores complete JSON messages, one per line.
+	output []string
+	done   bool
+	err    error
+}
+
+var (
+	tasks   = make(map[string]*Task)
+	tasksMu sync.RWMutex
+)
+
+// generateTaskID creates a unique ID for a task.
+func generateTaskID() string {
+	return fmt.Sprintf("%x", r.Int63())
+}
+
 const notebookHTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -195,7 +214,7 @@ const notebookHTML = `<!DOCTYPE html>
         summaryOutput.style.display = 'none';
       }
 
-      promptForm.addEventListener('submit', function(event) {
+      promptForm.addEventListener('submit', async function(event) {
         event.preventDefault(); // Prevent default form submission
 
         if (isSubmitting) {
@@ -214,7 +233,37 @@ const notebookHTML = `<!DOCTYPE html>
         promptInput.disabled = true;
         promptForm.querySelector('button[type="submit"]').disabled = true;
 
-        const eventSource = new EventSource(promptForm.action + '?prompt=' + encodeURIComponent(prompt));
+        let taskId;
+        try {
+          const response = await fetch(promptForm.action, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({ prompt: prompt }).toString(),
+          });
+          const data = await response.json();
+          if (!response.ok) {
+            throw new Error(data.error || 'Failed to start task');
+          }
+          taskId = data.taskId;
+        } catch (error) {
+          showStatus('Error starting task: ' + error.message, true);
+          isSubmitting = false;
+          promptInput.disabled = false;
+          promptForm.querySelector('button[type="submit"]').disabled = false;
+          promptInput.focus();
+          return;
+        }
+
+        if (!taskId) {
+          showStatus('Error: Did not receive a task ID from server.', true);
+          isSubmitting = false;
+          promptInput.disabled = false;
+          promptForm.querySelector('button[type="submit"]').disabled = false;
+          promptInput.focus();
+          return;
+        }
+
+        const eventSource = new EventSource('/api/stream-updates/' + taskId);
 
         eventSource.onmessage = function(event) {
           const data = JSON.parse(event.data);
@@ -316,6 +365,7 @@ func main() {
 	mux.HandleFunc("/create-notebook/", createNotebookHandler) // POST /create-notebook/{owner}/{repo}
 	mux.HandleFunc("/notebook/", notebookHandler)         // GET /notebook/{owner}/{repo}/{notebook_name}
 	mux.HandleFunc("/api/run-prompt/", apiRunPromptHandler)      // POST /api/run-prompt/{owner}/{repo}/{notebook_name}
+	mux.HandleFunc("/api/stream-updates/", apiStreamUpdatesHandler) // GET /api/stream-updates/{task_id}
 
 	addr := "127.0.0.1:8080"
 
@@ -425,20 +475,159 @@ func min(a, b int) int {
 	return b
 }
 
+// apiRunPromptHandler starts a long-running Gemini task.
 func apiRunPromptHandler(w http.ResponseWriter, r *http.Request) {
-	// Expecting URL path like /api/run-prompt/{owner}/{repo}/{notebook_name}
-	parts := strings.Split(r.URL.Path, "/")
-	if len(parts) < 6 || parts[1] != "api" || parts[2] != "run-prompt" {
-		http.Error(w, "Invalid API URL for running prompt", http.StatusBadRequest)
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error": "Method not allowed"}`, http.StatusMethodNotAllowed)
 		return
 	}
-	owner := parts[3]
-	repo := parts[4]
-	notebookName := parts[5]
 
-	prompt := r.URL.Query().Get("prompt")
+	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) < 6 || parts[1] != "api" || parts[2] != "run-prompt" {
+		http.Error(w, `{"error": "Invalid API URL"}`, http.StatusBadRequest)
+		return
+	}
+	owner, repo, notebookName := parts[3], parts[4], parts[5]
+
+	prompt := r.FormValue("prompt")
 	if prompt == "" {
-		http.Error(w, "Prompt cannot be empty", http.StatusBadRequest)
+		http.Error(w, `{"error": "Prompt cannot be empty"}`, http.StatusBadRequest)
+		return
+	}
+
+	worktreePath := filepath.Join(workDir, "worktree", owner, repo, notebookName)
+	if _, err := os.Stat(worktreePath); os.IsNotExist(err) {
+		log.Printf("Worktree path does not exist: %s", worktreePath)
+		http.Error(w, `{"error": "Worktree not found"}`, http.StatusNotFound)
+		return
+	}
+
+	taskID := generateTaskID()
+	task := &Task{
+		output: make([]string, 0),
+	}
+
+	tasksMu.Lock()
+	tasks[taskID] = task
+	tasksMu.Unlock()
+
+	go executePromptTask(task, worktreePath, prompt, notebookName)
+
+	log.Printf("Started task %s for prompt on %s", taskID, notebookName)
+	json.NewEncoder(w).Encode(map[string]string{"taskId": taskID})
+}
+
+// executePromptTask runs the Gemini command and periodic summarization for a task.
+func executePromptTask(task *Task, worktreePath, prompt, notebookName string) {
+	defer func() {
+		task.mu.Lock()
+		task.done = true
+		task.mu.Unlock()
+		log.Printf("Task for %s finished.", notebookName)
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cmd, stdoutPipe, stderrPipe, err := runGeminiStreaming(ctx, worktreePath, prompt)
+	if err != nil {
+		log.Printf("Starting Gemini command failed for %s: %v", notebookName, err)
+		jsonData, _ := json.Marshal(map[string]interface{}{"error": "Failed to start gemini"})
+		task.mu.Lock()
+		task.output = append(task.output, string(jsonData))
+		task.err = err
+		task.mu.Unlock()
+		return
+	}
+
+	var combinedOutputMu sync.Mutex
+	var combinedOutput strings.Builder
+
+	go func() {
+		scanner := bufio.NewScanner(io.MultiReader(stdoutPipe, stderrPipe))
+		for scanner.Scan() {
+			combinedOutputMu.Lock()
+			combinedOutput.WriteString(scanner.Text() + "\n")
+			combinedOutputMu.Unlock()
+		}
+	}()
+
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	doneChan := make(chan error, 1)
+	go func() { doneChan <- cmd.Wait() }()
+
+	for {
+		select {
+		case err := <-doneChan:
+			combinedOutputMu.Lock()
+			output := combinedOutput.String()
+			combinedOutputMu.Unlock()
+
+			summary, sErr := summarizeOutput(context.Background(), output)
+			if sErr != nil {
+				log.Printf("LLM final summarization failed for %s: %v", notebookName, sErr)
+				jsonData, _ := json.Marshal(map[string]interface{}{"error": "Final summarization failed."})
+				task.mu.Lock()
+				task.output = append(task.output, string(jsonData))
+				task.mu.Unlock()
+			} else {
+				log.Printf("Final summary for %s: %s", notebookName, summary)
+				jsonData, _ := json.Marshal(map[string]interface{}{"summary": summary, "done": true})
+				task.mu.Lock()
+				task.output = append(task.output, string(jsonData))
+				task.mu.Unlock()
+			}
+
+			if err != nil {
+				log.Printf("Gemini command for %s finished with error: %v", notebookName, err)
+				task.mu.Lock()
+				task.err = err
+				task.mu.Unlock()
+			} else {
+				log.Printf("Gemini command for %s finished successfully.", notebookName)
+			}
+			return
+		case <-ticker.C:
+			combinedOutputMu.Lock()
+			output := combinedOutput.String()
+			combinedOutputMu.Unlock()
+
+			if len(output) > 0 {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				summary, err := summarizeOutput(ctx, output)
+				cancel()
+				if err != nil {
+					log.Printf("Periodic summarization failed for %s: %v", notebookName, err)
+				} else {
+					log.Printf("Periodic summary for %s: %s", notebookName, summary)
+					jsonData, _ := json.Marshal(map[string]interface{}{"summary": summary})
+					task.mu.Lock()
+					task.output = append(task.output, string(jsonData))
+					task.mu.Unlock()
+				}
+			}
+		}
+	}
+}
+
+// apiStreamUpdatesHandler streams updates for a task using SSE.
+func apiStreamUpdatesHandler(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) < 4 || parts[2] != "stream-updates" {
+		http.Error(w, "Invalid stream URL", http.StatusBadRequest)
+		return
+	}
+	taskID := parts[3]
+
+	tasksMu.RLock()
+	task, ok := tasks[taskID]
+	tasksMu.RUnlock()
+
+	if !ok {
+		http.Error(w, "Task not found", http.StatusNotFound)
 		return
 	}
 
@@ -448,96 +637,40 @@ func apiRunPromptHandler(w http.ResponseWriter, r *http.Request) {
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		http.Error(w, "Streaming unsupported!", http.StatusInternalServerError)
+		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
 		return
 	}
 
-	sendJSON := func(data map[string]interface{}) {
-		jsonData, _ := json.Marshal(data)
-		fmt.Fprintf(w, "data: %s\n\n", jsonData)
-		flusher.Flush()
-	}
-
-	worktreePath := filepath.Join(workDir, "worktree", owner, repo, notebookName)
-	if _, err := os.Stat(worktreePath); os.IsNotExist(err) {
-		log.Printf("Worktree path does not exist: %s", worktreePath)
-		sendJSON(map[string]interface{}{"error": "Worktree not found"})
-		return
-	}
-
-	cmd, stdoutPipe, stderrPipe, err := runGeminiStreaming(r.Context(), worktreePath, prompt)
-	if err != nil {
-		log.Printf("Starting Gemini command failed for %s/%s/%s: %v", owner, repo, notebookName, err)
-		sendJSON(map[string]interface{}{"error": "Failed to start gemini"})
-		return
-	}
-
-	var mu sync.Mutex
-	var combinedOutput strings.Builder
-
-	// Goroutine to read from stdout and stderr
-	go func() {
-		scanner := bufio.NewScanner(io.MultiReader(stdoutPipe, stderrPipe))
-		for scanner.Scan() {
-			mu.Lock()
-			combinedOutput.WriteString(scanner.Text() + "\n")
-			mu.Unlock()
-		}
-	}()
-
-	ticker := time.NewTicker(1 * time.Second)
+	sentLines := 0
+	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
-	doneChan := make(chan error, 1)
-	go func() {
-		doneChan <- cmd.Wait()
-	}()
+	log.Printf("Client connected to stream for task %s", taskID)
 
 	for {
 		select {
-		case <-r.Context().Done():
-			log.Println("Client disconnected, stopping gemini.")
-			if cmd.Process != nil {
-				_ = cmd.Process.Kill()
-			}
-			return
-		case err := <-doneChan:
-			mu.Lock()
-			output := combinedOutput.String()
-			mu.Unlock()
-
-			summary, sErr := summarizeOutput(context.Background(), output)
-			if sErr != nil {
-				log.Printf("LLM final summarization failed for %s: %v", notebookName, sErr)
-				sendJSON(map[string]interface{}{"error": "Final summarization failed."})
-			} else {
-				log.Printf("Final summary for %s: %s", notebookName, summary)
-				sendJSON(map[string]interface{}{"summary": summary, "done": true})
-			}
-
-			if err != nil {
-				log.Printf("Gemini command for %s finished with error: %v", notebookName, err)
-			} else {
-				log.Printf("Gemini command for %s finished successfully.", notebookName)
-			}
-			return
 		case <-ticker.C:
-			mu.Lock()
-			output := combinedOutput.String()
-			mu.Unlock()
+			task.mu.RLock()
+			outputLines := task.output
+			isDone := task.done
+			task.mu.RUnlock()
 
-			if len(output) > 0 {
-				// Use a timeout for periodic summarization to avoid getting stuck
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				summary, err := summarizeOutput(ctx, output)
-				cancel()
-				if err != nil {
-					log.Printf("Periodic summarization failed for %s: %v", notebookName, err)
-				} else {
-					log.Printf("Periodic summary for %s: %s", notebookName, summary)
-					sendJSON(map[string]interface{}{"summary": summary})
+			if len(outputLines) > sentLines {
+				for i := sentLines; i < len(outputLines); i++ {
+					fmt.Fprintf(w, "data: %s\n\n", outputLines[i])
 				}
+				flusher.Flush()
+				sentLines = len(outputLines)
 			}
+
+			if isDone {
+				log.Printf("Task %s is done, closing stream.", taskID)
+				// Note: we don't clean up the task here, maybe add a TTL later.
+				return
+			}
+		case <-r.Context().Done():
+			log.Printf("Client disconnected from task %s", taskID)
+			return
 		}
 	}
 }
