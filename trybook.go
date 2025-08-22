@@ -157,12 +157,25 @@ const notebookHTML = `<!DOCTYPE html>
       <p style="margin: 0.2rem 0;">Worktree Path: <code>{{.WorktreePath}}</code></p>
     </div>
 
-    <form method="POST" action="/run-prompt/{{.Owner}}/{{.Repo}}/{{.NotebookName}}" style="margin-top: 2rem;">
-      <div style="display: flex; flex-direction: column; gap: 0.5rem;">
-        <textarea name="prompt" placeholder="question? or tell me to do something" rows="2" style="flex-grow: 1; font-size: 1.25rem; padding: 0.6rem 0.75rem; width: 100%; box-sizing: border-box;"></textarea>
-        <button type="submit" style="font-size: 1.1rem; padding: 0.6rem 1rem; align-self: flex-start;">run</button>
+    <form id="promptForm" method="POST" action="/run-prompt/{{.Owner}}/{{.Repo}}/{{.NotebookName}}" style="margin-top: 2rem;">
+      <div style="display: flex; gap: 0.5rem;">
+        <input type="text" id="promptInput" name="prompt" placeholder="question? or tell me to do something" style="flex-grow: 1; font-size: 1.25rem; padding: 0.6rem 0.75rem; box-sizing: border-box;">
+        <button type="submit" style="font-size: 1.1rem; padding: 0.6rem 1rem;">run</button>
       </div>
     </form>
+
+    <script>
+    (function() {
+      const promptInput = document.getElementById('promptInput');
+      const promptForm = document.getElementById('promptForm');
+      promptInput.addEventListener('keydown', function(event) {
+        if (event.key === 'Enter') {
+          event.preventDefault(); // Prevent default action (e.g., newline in a textarea, though input doesn't need this)
+          promptForm.submit();
+        }
+      });
+    })();
+    </script>
 
     {{if .Error}}
     <p style="color: #b00020; font-size: 0.95rem; margin-top: 1rem; white-space: pre-wrap;">Error: {{.Error}}</p>
