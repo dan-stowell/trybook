@@ -204,14 +204,19 @@ func manageRepo(ctx context.Context, input string) (string, error) {
 
 	var cmd *exec.Cmd
 	var operation string
+	var opStart time.Time
 
 	_, err = os.Stat(repoDir)
 	if err == nil { // Directory exists, perform pull
 		operation = "git pull"
+		log.Printf("Starting git pull for %s in %s", sshURL, repoDir)
+		opStart = time.Now()
 		cmd = exec.CommandContext(ctx, "git", "pull")
 		cmd.Dir = repoDir // Set working directory for pull
 	} else if os.IsNotExist(err) { // Directory does not exist, perform clone
 		operation = "git clone"
+		log.Printf("Starting git clone of %s into %s", sshURL, repoDir)
+		opStart = time.Now()
 		if err := os.MkdirAll(repoDir, 0o755); err != nil {
 			return "", fmt.Errorf("create repo directory %q: %w", repoDir, err)
 		}
@@ -224,8 +229,10 @@ func manageRepo(ctx context.Context, input string) (string, error) {
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		log.Printf("Failed %s for %s after %s: %v\n%s", operation, sshURL, time.Since(opStart), err, string(out))
 		return "", fmt.Errorf("%s failed: %v\n%s", operation, err, string(out))
 	}
+	log.Printf("Completed %s for %s in %s", operation, sshURL, time.Since(opStart))
 	return repoDir, nil
 }
 
