@@ -260,8 +260,9 @@ func apiSearchHandler(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	results, err := searchRepos(ctx, q)
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		log.Printf("search error for %q: %v", q, err)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("[]"))
 		return
 	}
 	w.WriteHeader(http.StatusOK)
