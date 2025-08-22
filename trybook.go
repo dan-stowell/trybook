@@ -11,12 +11,13 @@ import (
 	"net/http"
 	"os"
 	"os/user"
+	"bufio" // Added for streaming command output
 	"os/exec"
 	"os/signal"
 	"math/rand"
 	"path/filepath"
 	"strings"
-	"sync"
+	"sync" // Already present
 	"syscall"
 	"time"
 )
@@ -628,13 +629,79 @@ func executePromptTask(task *Task, worktreePath, prompt, notebookName string) {
 	cmd.Dir = worktreePath
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 
-	// Use CombinedOutput to capture both stdout and stderr
-	outputBytes, err := cmd.CombinedOutput()
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		task.mu.Lock()
+		task.err = fmt.Errorf("failed to get stdout pipe: %w", err)
+		task.status = "error"
+		task.done = true
+		task.mu.Unlock()
+		log.Printf("Gemini command for %s failed to get stdout pipe: %v", notebookName, err)
+		return
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		task.mu.Lock()
+		task.err = fmt.Errorf("failed to get stderr pipe: %w", err)
+		task.status = "error"
+		task.done = true
+		task.mu.Unlock()
+		log.Printf("Gemini command for %s failed to get stderr pipe: %v", notebookName, err)
+		return
+	}
+
+	if err := cmd.Start(); err != nil {
+		task.mu.Lock()
+		task.err = fmt.Errorf("failed to start gemini command: %w", err)
+		task.status = "error"
+		task.done = true
+		task.mu.Unlock()
+		log.Printf("Gemini command for %s failed to start: %v", notebookName, err)
+		return
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2) // Two goroutines for stdout and stderr
+
+	// Goroutine to read stdout
+	go func() {
+		defer wg.Done()
+		scanner := bufio.NewScanner(stdoutPipe)
+		for scanner.Scan() {
+			line := scanner.Text()
+			task.mu.Lock()
+			task.output += line + "\n" // Append line by line
+			task.mu.Unlock()
+		}
+		if err := scanner.Err(); err != nil {
+			log.Printf("Error reading stdout for task %s: %v", notebookName, err)
+		}
+	}()
+
+	// Goroutine to read stderr
+	go func() {
+		defer wg.Done()
+		scanner := bufio.NewScanner(stderrPipe)
+		for scanner.Scan() {
+			line := scanner.Text()
+			task.mu.Lock()
+			task.output += line + "\n" // Append line by line
+			task.mu.Unlock()
+		}
+		if err := scanner.Err(); err != nil {
+			log.Printf("Error reading stderr for task %s: %v", notebookName, err)
+		}
+	}()
+
+	wg.Wait() // Wait for both readers to finish after pipes are closed
+
+	// Wait for the command to exit
+	err = cmd.Wait()
 
 	task.mu.Lock()
 	defer task.mu.Unlock() // Ensure unlock happens
 
-	task.output = strings.TrimSpace(string(outputBytes))
+	task.output = strings.TrimSpace(task.output) // Trim after all output is collected
 	task.done = true
 
 	if err != nil {
