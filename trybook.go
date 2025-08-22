@@ -270,44 +270,35 @@ const notebookHTML = `<!DOCTYPE html>
 
       async function pollTask(taskId) {
         try {
-          // 1. Fetch raw task data (output and basic status)
-          const pollResponse = await fetch('/api/poll-task/' + taskId);
-          const pollData = await pollResponse.json();
-
-          if (!pollResponse.ok) {
-            throw new Error(pollData.error || 'Failed to poll task');
-          }
-
-          updateOutput(pollData.output); // Always update raw output area
-
-          // 2. Fetch summarized task data (status message and LLM summary)
-          const summarizeResponse = await fetch('/api/summarize-task/' + taskId);
-          const summarizeData = await summarizeResponse.json();
+          // Fetch summarized task data (status message, LLM summary, AND raw output)
+          const response = await fetch('/api/summarize-task/' + taskId);
+          const data = await response.json();
 
           let displayStatusMessage = '';
-          if (!summarizeResponse.ok) {
+          if (!response.ok) {
             // Log this error but don't stop the polling or general status display
-            console.error('Failed to fetch task summary:', summarizeData.error || 'Unknown error');
-            displayStatusMessage = 'Could not fetch summary: ' + (summarizeData.error || 'Unknown error');
+            console.error('Failed to fetch task summary:', data.error || 'Unknown error');
+            displayStatusMessage = 'Could not fetch summary: ' + (data.error || 'Unknown error');
           } else {
+            updateOutput(data.output); // Update raw output area using data from summarize-task endpoint
+
             // Check if there's a meaningful summary
-            const hasSummary = summarizeData.summary && summarizeData.summary !== "No output available yet.";
+            const hasSummary = data.summary && data.summary !== "No output available yet.";
 
             // If task is running and we have a summary, use the more concise "Running..."
-            if (pollData.status === 'running' && hasSummary) {
-                displayStatusMessage = "Running... " + summarizeData.summary;
+            if (data.status === 'running' && hasSummary) {
+                displayStatusMessage = "Running... " + data.summary;
             } else {
                 // Otherwise, use the server-provided status message and append summary if available
-                displayStatusMessage = summarizeData.statusMessage;
+                displayStatusMessage = data.statusMessage;
                 if (hasSummary) {
-                    displayStatusMessage += " " + summarizeData.summary;
+                    displayStatusMessage += " " + data.summary;
                 }
             }
           }
 
-          // 3. Update UI based on combined information
-          // The pollData.status is the authoritative source for task completion.
-          switch (pollData.status) {
+          // Update UI based on information from the single summarize-task endpoint
+          switch (data.status) {
             case 'running':
               setTaskLogStyle('running');
               showStatus(displayStatusMessage, false);
@@ -326,14 +317,14 @@ const notebookHTML = `<!DOCTYPE html>
               break;
             default: // Fallback for unknown states
               setTaskLogStyle('default');
-              showStatus("Unknown task status: " + pollData.status, true);
+              showStatus("Unknown task status: " + data.status, true);
               clearInterval(pollingIntervalId);
               enableForm();
           }
 
         } catch (error) {
           setTaskLogStyle('error');
-          showStatus('Polling or summarization failed: ' + error.message, true);
+          showStatus('Summarization polling failed: ' + error.message, true);
           clearInterval(pollingIntervalId);
           enableForm();
         }
@@ -761,6 +752,7 @@ func apiSummarizeTaskHandler(w http.ResponseWriter, r *http.Request) {
 		"status": currentStatus,
 		"statusMessage": statusMessage,
 		"summary": summary,
+		"output": currentOutput, // Add raw output to the response
 	}
 	if taskErr != nil {
 		resp["error"] = taskErr.Error()
