@@ -135,8 +135,9 @@ var (
 )
 
 type IndexData struct {
-	Query string
-	Error string
+	Query  string
+	Result string
+	Error  string
 }
 
 type RepoPageData struct {
