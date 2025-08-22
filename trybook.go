@@ -63,18 +63,17 @@ const indexHTML = `<!DOCTYPE html>
     if (!items || items.length === 0) { clearBox(); return; }
     box.innerHTML = items.map(function(it) {
       var desc = it.description ? it.description : '';
-      var escOwner = it.fullName.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+      var escFullName = it.fullName.replace(/&/g,'&amp;').replace(/</g,'&lt;');
       var escDesc = desc.replace(/&/g,'&amp;').replace(/</g,'&lt;');
-      return '<div class="sugg-item" data-repo="' + escOwner + '">' +
-               '<div class="sugg-title">' + escOwner + '</div>' +
+      return '<div class="sugg-item" data-repo="' + escFullName + '">' +
+               '<div class="sugg-title">' + escFullName + '</div>' +
                '<div class="sugg-desc">' + escDesc + '</div>' +
              '</div>';
     }).join('');
     Array.prototype.forEach.call(box.querySelectorAll('.sugg-item'), function(el) {
       el.addEventListener('click', function() {
-        input.value = el.getAttribute('data-repo');
-        clearBox();
-        input.focus();
+        const repoFullName = el.getAttribute('data-repo');
+        window.location.href = '/repo/' + repoFullName;
       });
     });
   }
@@ -110,15 +109,40 @@ const indexHTML = `<!DOCTYPE html>
 </html>
 `
 
+const repoHTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>trybook - {{.RepoName}}</title>
+</head>
+<body style="text-align:center;">
+  <h1>trybook</h1>
+  <p>Repository: <strong>{{.RepoName}}</strong></p>
+  <p>Cloned Commit: <code>{{.CommitHash}}</code></p>
+  {{if .Error}}
+  <p style="color: #b00020; font-size: 0.95rem; margin-top: 1rem; white-space: pre-wrap;">Error: {{.Error}}</p>
+  {{end}}
+  <p><a href="/">Back to search</a></p>
+</body>
+</html>
+`
+
 var (
 	indexTmpl = template.Must(template.New("index").Parse(indexHTML))
+	repoTmpl  = template.Must(template.New("repo").Parse(repoHTML))
 	workDir   string
 )
 
 type IndexData struct {
-	Query  string
-	Result string
-	Error  string
+	Query string
+	Error string
+}
+
+type RepoPageData struct {
+	RepoName   string
+	CommitHash string
+	Error      string
 }
 
 func defaultWorkDir() string {
@@ -136,6 +160,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", indexHandler)
 	mux.HandleFunc("/api/search", apiSearchHandler)
+	mux.HandleFunc("/repo/", repoHandler) // Handle /repo/{owner}/{repo}
 
 	addr := "127.0.0.1:8080"
 
@@ -175,24 +200,26 @@ func indexHandler(w http.ResponseWriter, r *http.Request) {
 		Query: r.URL.Query().Get("repo"),
 	}
 
-	if data.Query != "" {
-		dir, err := manageRepo(r.Context(), data.Query)
-		if err != nil {
-			data.Error = err.Error()
-		} else {
-			data.Result = fmt.Sprintf("Managed repository at %s", dir)
-		}
-	}
-
 	if err := indexTmpl.Execute(w, data); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
 }
 
-func manageRepo(ctx context.Context, input string) (string, error) {
+// getHeadCommit returns the SHA of the HEAD commit in the given repo directory.
+func getHeadCommit(ctx context.Context, repoDir string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
+	cmd.Dir = repoDir
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to get HEAD commit: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func manageRepo(ctx context.Context, input string) (string, string, error) { // Added string for commit hash
 	owner, repo, err := parseGitHubInput(input)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	repoDir := filepath.Join(workDir, "clone", owner, repo)
@@ -230,10 +257,48 @@ func manageRepo(ctx context.Context, input string) (string, error) {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		log.Printf("Failed %s for %s after %s: %v\n%s", operation, sshURL, time.Since(opStart), err, string(out))
-		return "", fmt.Errorf("%s failed: %v\n%s", operation, err, string(out))
+		return "", "", fmt.Errorf("%s failed: %v\n%s", operation, err, string(out))
 	}
 	log.Printf("Completed %s for %s in %s", operation, sshURL, time.Since(opStart))
-	return repoDir, nil
+
+	// Get the HEAD commit hash after successful operation
+	commitHash, err := getHeadCommit(ctx, repoDir)
+	if err != nil {
+		return repoDir, "", fmt.Errorf("could not get HEAD commit after %s: %w", operation, err)
+	}
+	return repoDir, commitHash, nil
+}
+
+func repoHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+	// Expecting URL path like /repo/{owner}/{repo}
+	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) < 4 || parts[1] != "repo" {
+		http.Error(w, "Invalid repository URL", http.StatusBadRequest)
+		return
+	}
+	owner := parts[2]
+	repo := parts[3]
+	repoFullName := owner + "/" + repo
+
+	data := RepoPageData{
+		RepoName: repoFullName,
+	}
+
+	repoDir, commitHash, err := manageRepo(r.Context(), repoFullName)
+	if err != nil {
+		data.Error = err.Error()
+		log.Printf("Error managing repo %s in %s: %v", repoFullName, repoDir, err)
+	} else {
+		data.CommitHash = commitHash
+		log.Printf("Successfully managed repo %s, commit %s in %s", repoFullName, commitHash, repoDir)
+	}
+
+	if err := repoTmpl.Execute(w, data); err != nil {
+		log.Printf("Template execution error for repo page: %v", err)
+		http.Error(w, "template error", http.StatusInternalServerError)
+	}
 }
 
 func parseGitHubInput(s string) (string, string, error) {
