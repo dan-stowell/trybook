@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"log"
@@ -21,6 +22,15 @@ const indexHTML = `<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>trybook</title>
+<style>
+  #suggestions { max-width: 40rem; margin: 0.5rem auto 0; text-align: left; }
+  .sugg-item { padding: 0.4rem 0.5rem; border: 1px solid #ddd; border-top: none; cursor: pointer; background: #fff; }
+  .sugg-item:first-child { border-top: 1px solid #ddd; border-top-left-radius: 6px; border-top-right-radius: 6px; }
+  .sugg-item:last-child { border-bottom-left-radius: 6px; border-bottom-right-radius: 6px; }
+  .sugg-item:hover { background: #f7f7f7; }
+  .sugg-title { font-weight: 600; }
+  .sugg-desc { color: #555; font-size: 0.9rem; }
+</style>
 </head>
 <body style="text-align:center;">
   <h1>trybook</h1>
@@ -28,6 +38,7 @@ const indexHTML = `<!DOCTYPE html>
     <input type="url" id="repoUrl" name="repo" placeholder="github repo" value="{{.Query}}" autofocus style="font-size: 1.25rem; padding: 0.6rem 0.75rem;">
     <button type="submit" style="font-size: 1.1rem; padding: 0.6rem 1rem;">Open</button>
   </form>
+  <div id="suggestions"></div>
 
   {{if .Error}}
   <p style="color: #b00020; font-size: 0.95rem; margin-top: 1rem; white-space: pre-wrap;">Error: {{.Error}}</p>
@@ -35,6 +46,62 @@ const indexHTML = `<!DOCTYPE html>
   {{if .Result}}
   <p style="color: #0a7; font-size: 0.95rem; margin-top: 1rem; white-space: pre-wrap;">{{.Result}}</p>
   {{end}}
+<script>
+(function(){
+  const input = document.getElementById('repoUrl');
+  const box = document.getElementById('suggestions');
+  let controller = null;
+  let debounceTimer = null;
+
+  function clearBox() { box.innerHTML = ''; }
+
+  function render(items) {
+    if (!items || items.length === 0) { clearBox(); return; }
+    box.innerHTML = items.map(function(it) {
+      var desc = it.description ? it.description : '';
+      var escOwner = it.nameWithOwner.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+      var escDesc = desc.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+      return '<div class="sugg-item" data-repo="' + escOwner + '">' +
+               '<div class="sugg-title">' + escOwner + '</div>' +
+               '<div class="sugg-desc">' + escDesc + '</div>' +
+             '</div>';
+    }).join('');
+    Array.prototype.forEach.call(box.querySelectorAll('.sugg-item'), function(el) {
+      el.addEventListener('click', function() {
+        input.value = el.getAttribute('data-repo');
+        clearBox();
+        input.focus();
+      });
+    });
+  }
+
+  async function search(q){
+    if (controller) controller.abort();
+    controller = new AbortController();
+    try{
+      const resp = await fetch('/api/search?query=' + encodeURIComponent(q), { signal: controller.signal });
+      if (!resp.ok) { clearBox(); return; }
+      const data = await resp.json();
+      render(Array.isArray(data) ? data.slice(0,5) : []);
+    } catch(e) {
+      if (!(e && e.name === 'AbortError')) clearBox();
+    }
+  }
+
+  input.addEventListener('input', function() {
+    const q = input.value.trim();
+    if (q.length < 2) { clearBox(); if (controller) controller.abort(); return; }
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(function(){ search(q); }, 250);
+  });
+
+  document.addEventListener('click', function(e) {
+    if (!box.contains(e.target) && e.target !== input) {
+      clearBox();
+    }
+  });
+})();
+</script>
 </body>
 </html>
 `
@@ -50,6 +117,7 @@ type IndexData struct {
 func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", indexHandler)
+	mux.HandleFunc("/api/search", apiSearchHandler)
 
 	addr := "127.0.0.1:8080"
 
@@ -166,6 +234,59 @@ func parseGitHubInput(s string) (string, string, error) {
 	return owner, repo, nil
 }
 
+
+type Repo struct {
+	NameWithOwner  string `json:"nameWithOwner"`
+	Description    string `json:"description"`
+	SSHURL         string `json:"sshUrl"`
+	URL            string `json:"url"`
+	StargazerCount int    `json:"stargazerCount"`
+}
+
+func apiSearchHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "method not allowed"})
+		return
+	}
+	q := strings.TrimSpace(r.URL.Query().Get("query"))
+	if q == "" || len(q) < 2 {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("[]"))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	results, err := searchRepos(ctx, q)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(results)
+}
+
+func searchRepos(ctx context.Context, q string) ([]Repo, error) {
+	cmd := exec.CommandContext(ctx, "gh", "search", "repos", q, "--limit", "5", "--json", "nameWithOwner,description,sshUrl,url,stargazerCount", "--sort", "best-match")
+	cmd.Env = append(os.Environ(),
+		"GH_NO_UPDATE_NOTIFIER=1",
+		"GIT_TERMINAL_PROMPT=0",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("gh search repos failed: %v\n%s", err, string(out))
+	}
+	var repos []Repo
+	if err := json.Unmarshal(out, &repos); err != nil {
+		return nil, fmt.Errorf("parse gh json: %w", err)
+	}
+	if len(repos) > 5 {
+		repos = repos[:5]
+	}
+	return repos, nil
+}
 
 func logRequest(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
