@@ -147,10 +147,10 @@ const repoHTML = `<!DOCTYPE html>
 // Task represents a long-running gemini process.
 type Task struct {
 	mu     sync.RWMutex
-	// output stores complete JSON messages, one per line.
-	output []string
-	done   bool
-	err    error
+	output string // Stores combined stdout/stderr
+	status string // "running", "success", "error"
+	done   bool   // if true, the task has finished processing (either success or error)
+	err    error  // Stores the Go error if task failed
 }
 
 var (
@@ -186,39 +186,87 @@ const notebookHTML = `<!DOCTYPE html>
       </div>
     </form>
 
-    <div id="statusMessage" style="margin-top: 1rem; color: #555;">{{.ThinkingMessage}}</div>
-    <div id="summaryOutput" style="margin-top: 1rem; padding: 0.5rem 1rem; background-color: #e6ffe6; border: 1px solid #ccffcc; border-radius: 4px; display: {{if .Summary}}block{{else}}none{{end}};">
-        <strong>Summary:</strong> {{.Summary}}
-    </div>
+    <div id="statusMessage" style="margin-top: 1rem; color: #555;"></div>
+    <pre id="outputArea" style="margin-top: 1rem; padding: 0.5rem 1rem; background-color: #f7f7f7; border: 1px solid #ddd; border-radius: 4px; white-space: pre-wrap; font-family: monospace; text-align: left;"></pre>
 
     <script>
     (function() {
       const promptInput = document.getElementById('promptInput');
       const promptForm = document.getElementById('promptForm');
       const statusMessage = document.getElementById('statusMessage');
-      const summaryOutput = document.getElementById('summaryOutput');
+      const outputArea = document.getElementById('outputArea');
       let isSubmitting = false; // Flag to prevent multiple submissions
+      let pollingIntervalId = null; // To store the interval ID for polling
 
       function showStatus(message, isError = false) {
         statusMessage.textContent = message;
         statusMessage.style.color = isError ? '#b00020' : '#555';
       }
 
-      function showSummary(summary) {
-        summaryOutput.querySelector('strong').nextSibling.textContent = ' ' + summary;
-        summaryOutput.style.display = 'block';
+      function updateOutput(output) {
+        outputArea.textContent = output;
       }
 
-      function clearSummary() {
-        summaryOutput.querySelector('strong').nextSibling.textContent = '';
-        summaryOutput.style.display = 'none';
+      function clearOutput() {
+        outputArea.textContent = '';
+      }
+
+      function enableForm() {
+        promptInput.disabled = false;
+        promptForm.querySelector('button[type="submit"]').disabled = false;
+        promptInput.focus();
+        isSubmitting = false;
+      }
+
+      function disableForm() {
+        promptInput.disabled = true;
+        promptForm.querySelector('button[type="submit"]').disabled = true;
+        isSubmitting = true;
+      }
+
+      async function pollTask(taskId) {
+        try {
+          const response = await fetch('/api/poll-task/' + taskId);
+          const data = await response.json();
+
+          if (!response.ok) {
+            throw new Error(data.error || 'Failed to poll task');
+          }
+
+          updateOutput(data.output);
+
+          switch (data.status) {
+            case 'running':
+              showStatus("Task running...");
+              break;
+            case 'success':
+              showStatus("Task completed successfully.", false);
+              clearInterval(pollingIntervalId);
+              enableForm();
+              break;
+            case 'error':
+              showStatus("Task error: " + (data.error || "Unknown error"), true);
+              clearInterval(pollingIntervalId);
+              enableForm();
+              break;
+            default:
+              showStatus("Unknown task status: " + data.status, true);
+              clearInterval(pollingIntervalId);
+              enableForm();
+          }
+
+        } catch (error) {
+          showStatus('Polling failed: ' + error.message, true);
+          clearInterval(pollingIntervalId);
+          enableForm();
+        }
       }
 
       promptForm.addEventListener('submit', async function(event) {
-        event.preventDefault(); // Prevent default form submission
+        event.preventDefault();
 
         if (isSubmitting) {
-          return; // Prevent multiple submissions
+          return;
         }
 
         const prompt = promptInput.value.trim();
@@ -227,11 +275,9 @@ const notebookHTML = `<!DOCTYPE html>
           return;
         }
 
-        isSubmitting = true; // Set flag
-        clearSummary();
-        showStatus("Gemini is thinking...", false);
-        promptInput.disabled = true;
-        promptForm.querySelector('button[type="submit"]').disabled = true;
+        disableForm();
+        clearOutput();
+        showStatus("Starting task...");
 
         let taskId;
         try {
@@ -247,59 +293,20 @@ const notebookHTML = `<!DOCTYPE html>
           taskId = data.taskId;
         } catch (error) {
           showStatus('Error starting task: ' + error.message, true);
-          isSubmitting = false;
-          promptInput.disabled = false;
-          promptForm.querySelector('button[type="submit"]').disabled = false;
-          promptInput.focus();
+          enableForm();
           return;
         }
 
         if (!taskId) {
           showStatus('Error: Did not receive a task ID from server.', true);
-          isSubmitting = false;
-          promptInput.disabled = false;
-          promptForm.querySelector('button[type="submit"]').disabled = false;
-          promptInput.focus();
+          enableForm();
           return;
         }
 
-        const eventSource = new EventSource('/api/stream-updates/' + taskId);
-
-        eventSource.onmessage = function(event) {
-          const data = JSON.parse(event.data);
-
-          if (data.error) {
-            showStatus('Error: ' + data.error, true);
-            eventSource.close();
-            isSubmitting = false;
-            promptInput.disabled = false;
-            promptForm.querySelector('button[type="submit"]').disabled = false;
-            promptInput.focus();
-            return;
-          }
-
-          if (data.summary) {
-            showSummary(data.summary);
-          }
-
-          if (data.done) {
-            showStatus("Gemini is done.", false);
-            eventSource.close();
-            isSubmitting = false;
-            promptInput.disabled = false;
-            promptForm.querySelector('button[type="submit"]').disabled = false;
-            promptInput.focus();
-          }
-        };
-
-        eventSource.onerror = function(e) {
-          showStatus('Request failed: connection error to server.', true);
-          eventSource.close();
-          isSubmitting = false;
-          promptInput.disabled = false;
-          promptForm.querySelector('button[type="submit"]').disabled = false;
-          promptInput.focus();
-        };
+        showStatus("Task started, waiting for updates...");
+        // Start polling immediately and then every second
+        pollTask(taskId); // Initial poll
+        pollingIntervalId = setInterval(() => pollTask(taskId), 1000);
       });
     })();
     </script>
@@ -335,15 +342,13 @@ type RepoPageData struct {
 }
 
 type NotebookPageData struct {
-	Owner         string
-	Repo          string
-	RepoName      string // owner/repo
-	NotebookName  string
-	WorktreePath  string
-	BranchName    string
-	Summary       string // The last generated summary
-	ThinkingMessage string // Message to display while processing
-	Error         string
+	Owner        string
+	Repo         string
+	RepoName     string // owner/repo
+	NotebookName string
+	WorktreePath string
+	BranchName   string
+	Error        string
 }
 
 func defaultWorkDir() string {
@@ -364,8 +369,8 @@ func main() {
 	mux.HandleFunc("/repo/", repoHandler)                 // Handle /repo/{owner}/{repo}
 	mux.HandleFunc("/create-notebook/", createNotebookHandler) // POST /create-notebook/{owner}/{repo}
 	mux.HandleFunc("/notebook/", notebookHandler)         // GET /notebook/{owner}/{repo}/{notebook_name}
-	mux.HandleFunc("/api/run-prompt/", apiRunPromptHandler)      // POST /api/run-prompt/{owner}/{repo}/{notebook_name}
-	mux.HandleFunc("/api/stream-updates/", apiStreamUpdatesHandler) // GET /api/stream-updates/{task_id}
+	mux.HandleFunc("/api/run-prompt/", apiRunPromptHandler) // POST /api/run-prompt/{owner}/{repo}/{notebook_name}
+	mux.HandleFunc("/api/poll-task/", apiPollTaskHandler)   // GET /api/poll-task/{task_id}
 
 	addr := "127.0.0.1:8080"
 
@@ -457,23 +462,6 @@ func runGeminiStreaming(ctx context.Context, worktreePath, prompt string) (*exec
 	return cmd, stdout, stderr, nil
 }
 
-// summarizeOutput uses llm to summarize the given output.
-func summarizeOutput(ctx context.Context, output string) (string, error) {
-	summaryPrompt := fmt.Sprintf("Please summarize this output in a single sentence: %s", output)
-	log.Printf("Running llm to summarize output (first 100 chars): %q...", output[:min(100, len(output))])
-	stdout, stderr, err := runCommandInWorktree(ctx, "", "llm", "--model", "gpt-5-nano", summaryPrompt)
-	if err != nil {
-		return "", fmt.Errorf("llm summarization failed: %w (stderr: %s)", err, stderr)
-	}
-	return strings.TrimSpace(stdout), nil
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
 
 // apiRunPromptHandler starts a long-running Gemini task.
 func apiRunPromptHandler(w http.ResponseWriter, r *http.Request) {
@@ -505,7 +493,9 @@ func apiRunPromptHandler(w http.ResponseWriter, r *http.Request) {
 
 	taskID := generateTaskID()
 	task := &Task{
-		output: make([]string, 0),
+		output: "",
+		status: "running", // Initial status
+		done:   false,
 	}
 
 	tasksMu.Lock()
@@ -518,106 +508,49 @@ func apiRunPromptHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"taskId": taskID})
 }
 
-// executePromptTask runs the Gemini command and periodic summarization for a task.
+// executePromptTask runs the Gemini command and captures its output.
 func executePromptTask(task *Task, worktreePath, prompt, notebookName string) {
-	defer func() {
-		task.mu.Lock()
-		task.done = true
-		task.mu.Unlock()
-		log.Printf("Task for %s finished.", notebookName)
-	}()
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	cmd, stdoutPipe, stderrPipe, err := runGeminiStreaming(ctx, worktreePath, prompt)
+	task.mu.Lock()
+	task.status = "running" // Ensure status is explicitly set to running
+	task.mu.Unlock()
+
+	cmd := exec.CommandContext(ctx, "gemini", "--prompt", prompt)
+	cmd.Dir = worktreePath
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+
+	// Use CombinedOutput to capture both stdout and stderr
+	outputBytes, err := cmd.CombinedOutput()
+
+	task.mu.Lock()
+	defer task.mu.Unlock() // Ensure unlock happens
+
+	task.output = strings.TrimSpace(string(outputBytes))
+	task.done = true
+
 	if err != nil {
-		log.Printf("Starting Gemini command failed for %s: %v", notebookName, err)
-		jsonData, _ := json.Marshal(map[string]interface{}{"error": "Failed to start gemini"})
-		task.mu.Lock()
-		task.output = append(task.output, string(jsonData))
 		task.err = err
-		task.mu.Unlock()
-		return
-	}
-
-	var combinedOutputMu sync.Mutex
-	var combinedOutput strings.Builder
-
-	go func() {
-		scanner := bufio.NewScanner(io.MultiReader(stdoutPipe, stderrPipe))
-		for scanner.Scan() {
-			combinedOutputMu.Lock()
-			combinedOutput.WriteString(scanner.Text() + "\n")
-			combinedOutputMu.Unlock()
-		}
-	}()
-
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
-
-	doneChan := make(chan error, 1)
-	go func() { doneChan <- cmd.Wait() }()
-
-	for {
-		select {
-		case err := <-doneChan:
-			combinedOutputMu.Lock()
-			output := combinedOutput.String()
-			combinedOutputMu.Unlock()
-
-			summary, sErr := summarizeOutput(context.Background(), output)
-			if sErr != nil {
-				log.Printf("LLM final summarization failed for %s: %v", notebookName, sErr)
-				jsonData, _ := json.Marshal(map[string]interface{}{"error": "Final summarization failed."})
-				task.mu.Lock()
-				task.output = append(task.output, string(jsonData))
-				task.mu.Unlock()
-			} else {
-				log.Printf("Final summary for %s: %s", notebookName, summary)
-				jsonData, _ := json.Marshal(map[string]interface{}{"summary": summary, "done": true})
-				task.mu.Lock()
-				task.output = append(task.output, string(jsonData))
-				task.mu.Unlock()
-			}
-
-			if err != nil {
-				log.Printf("Gemini command for %s finished with error: %v", notebookName, err)
-				task.mu.Lock()
-				task.err = err
-				task.mu.Unlock()
-			} else {
-				log.Printf("Gemini command for %s finished successfully.", notebookName)
-			}
-			return
-		case <-ticker.C:
-			combinedOutputMu.Lock()
-			output := combinedOutput.String()
-			combinedOutputMu.Unlock()
-
-			if len(output) > 0 {
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				summary, err := summarizeOutput(ctx, output)
-				cancel()
-				if err != nil {
-					log.Printf("Periodic summarization failed for %s: %v", notebookName, err)
-				} else {
-					log.Printf("Periodic summary for %s: %s", notebookName, summary)
-					jsonData, _ := json.Marshal(map[string]interface{}{"summary": summary})
-					task.mu.Lock()
-					task.output = append(task.output, string(jsonData))
-					task.mu.Unlock()
-				}
-			}
-		}
+		task.status = "error"
+		log.Printf("Gemini command for %s finished with error: %v\nOutput:\n%s", notebookName, err, task.output)
+	} else {
+		task.status = "success"
+		log.Printf("Gemini command for %s finished successfully.\nOutput:\n%s", notebookName, task.output)
 	}
 }
 
-// apiStreamUpdatesHandler streams updates for a task using SSE.
-func apiStreamUpdatesHandler(w http.ResponseWriter, r *http.Request) {
+// apiPollTaskHandler returns the current status and output of a task.
+func apiPollTaskHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error": "Method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
 	parts := strings.Split(r.URL.Path, "/")
-	if len(parts) < 4 || parts[2] != "stream-updates" {
-		http.Error(w, "Invalid stream URL", http.StatusBadRequest)
+	if len(parts) < 4 || parts[2] != "poll-task" {
+		http.Error(w, `{"error": "Invalid API URL"}`, http.StatusBadRequest)
 		return
 	}
 	taskID := parts[3]
@@ -627,52 +560,23 @@ func apiStreamUpdatesHandler(w http.ResponseWriter, r *http.Request) {
 	tasksMu.RUnlock()
 
 	if !ok {
-		http.Error(w, "Task not found", http.StatusNotFound)
+		http.Error(w, `{"error": "Task not found"}`, http.StatusNotFound)
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
-		return
+	task.mu.RLock()
+	resp := map[string]interface{}{
+		"taskId": taskID,
+		"status": task.status,
+		"output": task.output,
+		"done":   task.done,
 	}
-
-	sentLines := 0
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-
-	log.Printf("Client connected to stream for task %s", taskID)
-
-	for {
-		select {
-		case <-ticker.C:
-			task.mu.RLock()
-			outputLines := task.output
-			isDone := task.done
-			task.mu.RUnlock()
-
-			if len(outputLines) > sentLines {
-				for i := sentLines; i < len(outputLines); i++ {
-					fmt.Fprintf(w, "data: %s\n\n", outputLines[i])
-				}
-				flusher.Flush()
-				sentLines = len(outputLines)
-			}
-
-			if isDone {
-				log.Printf("Task %s is done, closing stream.", taskID)
-				// Note: we don't clean up the task here, maybe add a TTL later.
-				return
-			}
-		case <-r.Context().Done():
-			log.Printf("Client disconnected from task %s", taskID)
-			return
-		}
+	if task.err != nil {
+		resp["error"] = task.err.Error()
 	}
+	task.mu.RUnlock()
+
+	json.NewEncoder(w).Encode(resp)
 }
 
 
