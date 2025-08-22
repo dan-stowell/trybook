@@ -245,11 +245,11 @@ func manageRepo(ctx context.Context, input string) (string, string, error) { // 
 		log.Printf("Starting git clone of %s into %s", sshURL, repoDir)
 		opStart = time.Now()
 		if err := os.MkdirAll(repoDir, 0o755); err != nil {
-			return "", fmt.Errorf("create repo directory %q: %w", repoDir, err)
+			return "", "", fmt.Errorf("create repo directory %q: %w", repoDir, err)
 		}
 		cmd = exec.CommandContext(ctx, "git", "clone", "--depth=1", "--single-branch", sshURL, repoDir)
 	} else {
-		return "", fmt.Errorf("stat %q: %w", repoDir, err)
+		return "", "", fmt.Errorf("stat %q: %w", repoDir, err)
 	}
 
 	// Avoid interactive prompts in server context.
