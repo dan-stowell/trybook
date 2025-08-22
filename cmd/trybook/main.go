@@ -24,8 +24,8 @@ const indexHTML = `<!DOCTYPE html>
   .container { max-width: 900px; margin: 0 auto; }
   h1 { margin-top: 0; font-size: 2rem; }
   form { margin-top: 1rem; }
-  textarea, input[type="url"] { width: 100%; box-sizing: border-box; padding: 1rem; font-size: 1rem; border-radius: 8px; border: 1px solid #ccc; }
-  textarea { min-height: 200px; resize: vertical; }
+  input[type="url"] { width: 100%; box-sizing: border-box; padding: 1rem; font-size: 1rem; border-radius: 8px; border: 1px solid #ccc; }
+  input[type="url"] { height: 3rem; }
   button { margin-top: 1rem; padding: 0.75rem 1.25rem; font-size: 1rem; border: none; border-radius: 6px; background: #2d6cdf; color: white; cursor: pointer; }
   button:hover { background: #2156b6; }
   .hint { color: #666; font-size: 0.9rem; margin-top: 0.5rem; }
@@ -34,11 +34,11 @@ const indexHTML = `<!DOCTYPE html>
 <body>
   <div class="container">
     <h1>trybook</h1>
-    <p>Enter one or more GitHub repository URLs to explore or edit their local clones.</p>
+    <p>Enter a GitHub repository URL or owner/repo to explore or edit its local clone.</p>
     <form method="GET" action="/">
-      <label for="repoUrls" style="display:block; font-weight:600; margin-bottom:0.5rem;">GitHub repository URLs</label>
-      <textarea id="repoUrls" name="urls" placeholder="https://github.com/owner/repo&#10;https://github.com/owner/another" autofocus></textarea>
-      <div class="hint">You can paste multiple URLs, one per line.</div>
+      <label for="repoUrl" style="display:block; font-weight:600; margin-bottom:0.5rem;">GitHub repository URL or owner/repo</label>
+      <input type="url" id="repoUrl" name="repo" placeholder="https://github.com/owner/repo or owner/repo" autofocus>
+      <div class="hint">Example: https://github.com/owner/repo or owner/repo</div>
       <button type="submit">Open</button>
     </form>
   </div>
