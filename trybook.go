@@ -151,6 +151,8 @@ type Task struct {
 	status string // "running", "success", "error"
 	done   bool   // if true, the task has finished processing (either success or error)
 	err    error  // Stores the Go error if task failed
+	finalSummary string // Stores the one-time generated final summary
+	hasFinalSummary bool // Indicates if finalSummary has been generated
 }
 
 var (
@@ -781,23 +783,49 @@ func apiSummarizeTaskHandler(w http.ResponseWriter, r *http.Request) {
 	currentStatus := task.status
 	currentOutput := task.output
 	taskErr := task.err
+	taskDone := task.done
+	cachedFinalSummary := task.finalSummary
+	cachedHasFinalSummary := task.hasFinalSummary
 	task.mu.RUnlock()
 
 	var summary string
-	if currentOutput != "" {
-		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second) // Give LLM some time
-		defer cancel()
-		s, err := runGeminiSummary(ctx, currentOutput)
-		if err != nil {
-			log.Printf("Failed to generate summary for task %s: %v", taskID, err)
-			summary = "Could not generate summary." // Fallback summary
+	if cachedHasFinalSummary {
+		summary = cachedFinalSummary // Use cached summary if already generated
+	} else if taskDone { // Task is done, but final summary not yet generated
+		if currentOutput != "" {
+			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+			defer cancel()
+			s, err := runGeminiSummary(ctx, currentOutput)
+			if err != nil {
+				log.Printf("Failed to generate final summary for task %s: %v", taskID, err)
+				summary = "Could not generate final summary."
+			} else {
+				summary = s
+				// Cache the generated summary for future requests
+				task.mu.Lock()
+				task.finalSummary = summary
+				task.hasFinalSummary = true
+				task.mu.Unlock()
+			}
 		} else {
-			summary = s
+			summary = "No output available for final summary."
 		}
-	} else {
-		summary = "No output available yet."
+	} else { // Task is still running, generate a real-time summary
+		if currentOutput != "" {
+			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second) // Give LLM some time
+			defer cancel()
+			s, err := runGeminiSummary(ctx, currentOutput)
+			if err != nil {
+				log.Printf("Failed to generate running summary for task %s: %v", taskID, err)
+				summary = "Could not generate summary." // Fallback summary
+			} else {
+				summary = s
+			}
+		} else {
+			summary = "No output available yet."
+		}
 	}
-    
+
     // Determine overall message based on status for a single sentence summary
     var statusMessage string
     switch currentStatus {
