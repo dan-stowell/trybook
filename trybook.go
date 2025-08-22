@@ -270,42 +270,61 @@ const notebookHTML = `<!DOCTYPE html>
 
       async function pollTask(taskId) {
         try {
-          const response = await fetch('/api/poll-task/' + taskId);
-          const data = await response.json();
+          // 1. Fetch raw task data (output and basic status)
+          const pollResponse = await fetch('/api/poll-task/' + taskId);
+          const pollData = await pollResponse.json();
 
-          if (!response.ok) {
-            throw new Error(data.error || 'Failed to poll task');
+          if (!pollResponse.ok) {
+            throw new Error(pollData.error || 'Failed to poll task');
           }
 
-          updateOutput(data.output);
+          updateOutput(pollData.output); // Always update raw output area
 
-          switch (data.status) {
+          // 2. Fetch summarized task data (status message and LLM summary)
+          const summarizeResponse = await fetch('/api/summarize-task/' + taskId);
+          const summarizeData = await summarizeResponse.json();
+
+          let displayStatusMessage = '';
+          if (!summarizeResponse.ok) {
+            // Log this error but don't stop the polling or general status display
+            console.error('Failed to fetch task summary:', summarizeData.error || 'Unknown error');
+            displayStatusMessage = 'Could not fetch summary: ' + (summarizeData.error || 'Unknown error');
+          } else {
+            displayStatusMessage = summarizeData.statusMessage;
+            if (summarizeData.summary && summarizeData.summary !== "No output available yet.") {
+                displayStatusMessage += " " + summarizeData.summary;
+            }
+          }
+
+          // 3. Update UI based on combined information
+          // The `pollData.status` is the authoritative source for task completion.
+          switch (pollData.status) {
             case 'running':
               setTaskLogStyle('running');
-              showStatus("Task running...");
+              showStatus(displayStatusMessage, false);
               break;
             case 'success':
               setTaskLogStyle('success');
-              showStatus("Task completed successfully.", false);
+              showStatus(displayStatusMessage, false);
               clearInterval(pollingIntervalId);
               enableForm();
               break;
             case 'error':
               setTaskLogStyle('error');
-              showStatus("Task error: " + (data.error || "Unknown error"), true);
+              showStatus(displayStatusMessage, true);
               clearInterval(pollingIntervalId);
               enableForm();
               break;
-            default:
-              setTaskLogStyle('default'); // Fallback to default for unknown states
-              showStatus("Unknown task status: " + data.status, true);
+            default: // Fallback for unknown states
+              setTaskLogStyle('default');
+              showStatus("Unknown task status: " + pollData.status, true);
               clearInterval(pollingIntervalId);
               enableForm();
           }
 
         } catch (error) {
-          setTaskLogStyle('error'); // Set error style for polling failures
-          showStatus('Polling failed: ' + error.message, true);
+          setTaskLogStyle('error');
+          showStatus('Polling or summarization failed: ' + error.message, true);
           clearInterval(pollingIntervalId);
           enableForm();
         }
