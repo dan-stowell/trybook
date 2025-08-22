@@ -59,7 +59,7 @@ const indexHTML = `<!DOCTYPE html>
     if (!items || items.length === 0) { clearBox(); return; }
     box.innerHTML = items.map(function(it) {
       var desc = it.description ? it.description : '';
-      var escOwner = it.nameWithOwner.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+      var escOwner = it.fullName.replace(/&/g,'&amp;').replace(/</g,'&lt;');
       var escDesc = desc.replace(/&/g,'&amp;').replace(/</g,'&lt;');
       return '<div class="sugg-item" data-repo="' + escOwner + '">' +
                '<div class="sugg-title">' + escOwner + '</div>' +
@@ -270,7 +270,7 @@ func apiSearchHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func searchRepos(ctx context.Context, q string) ([]Repo, error) {
-	cmd := exec.CommandContext(ctx, "gh", "search", "repos", q, "--limit", "5", "--json", "nameWithOwner,description,sshUrl,url,stargazerCount")
+	cmd := exec.CommandContext(ctx, "gh", "search", "repos", q, "--limit", "5", "--json", "fullName,description,sshUrl,url,stargazersCount")
 	cmd.Env = append(os.Environ(),
 		"GH_NO_UPDATE_NOTIFIER=1",
 		"GIT_TERMINAL_PROMPT=0",
