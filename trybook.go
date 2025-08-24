@@ -188,11 +188,15 @@ const notebookHTML = `<!DOCTYPE html>
   <div class="content-wrapper">
     <h1><a href="https://github.com/{{.Owner}}/{{.Repo}}">{{.RepoName}}</a> / {{.NotebookName}}</h1>
 
-    <div id="taskLog" style="margin-top: 1rem; padding: 0.5rem 1rem; border: 1px solid #ddd; border-radius: 4px; background-color: #fcfcfc; text-align: left; display: none;">
-      <div id="loggedPrompt" style="margin-bottom: 0.75rem; font-style: italic; color: #666; word-wrap: break-word; display: none;"></div>
-      <div id="statusMessage" style="margin-bottom: 0.5rem; color: #555;"></div>
-      <pre id="outputArea" style="white-space: pre-wrap; font-family: monospace; text-align: left; margin: 0;"></pre>
-    </div>
+    <div id="taskLogContainer"></div>
+
+    <template id="taskLogTemplate">
+      <div class="task-log-entry" style="margin-top: 1rem; padding: 0.5rem 1rem; border: 1px solid #ddd; border-radius: 4px; background-color: #fcfcfc; text-align: left;">
+        <div class="logged-prompt" style="margin-bottom: 0.75rem; font-style: italic; color: #666; word-wrap: break-word; display: none;"></div>
+        <div class="status-message" style="margin-bottom: 0.5rem; color: #555;"></div>
+        <pre class="output-area" style="white-space: pre-wrap; font-family: monospace; text-align: left; margin: 0;"></pre>
+      </div>
+    </template>
 
     {{if .Error}}
     <p style="color: #b00020; font-size: 0.95rem; margin-top: 1rem; white-space: pre-wrap;">Error: {{.Error}}</p>
@@ -211,64 +215,55 @@ const notebookHTML = `<!DOCTYPE html>
     (function() {
       const promptInput = document.getElementById('promptInput');
       const promptForm = document.getElementById('promptForm');
-      const statusMessage = document.getElementById('statusMessage');
-      const outputArea = document.getElementById('outputArea');
-      const taskLog = document.getElementById('taskLog');
-      const loggedPrompt = document.getElementById('loggedPrompt');
+      const taskLogContainer = document.getElementById('taskLogContainer');
+      const taskLogTemplate = document.getElementById('taskLogTemplate');
+
       let isSubmitting = false; // Flag to prevent multiple submissions
-      let pollingIntervalId = null; // To store the interval ID for polling
+      const activeTasks = {}; // taskId -> {taskLogEntry, loggedPrompt, statusMessage, outputArea, pollingIntervalId}
 
-      function showTaskLog() { taskLog.style.display = 'block'; }
-      function hideTaskLog() { taskLog.style.display = 'none'; }
+      function createTaskLogUI(promptText) {
+        const clone = document.importNode(taskLogTemplate.content, true);
+        const taskLogEntry = clone.querySelector('.task-log-entry');
+        const loggedPrompt = taskLogEntry.querySelector('.logged-prompt');
+        const statusMessage = taskLogEntry.querySelector('.status-message');
+        const outputArea = taskLogEntry.querySelector('.output-area');
 
-      function showStatus(message, isError = false) {
-        statusMessage.textContent = message;
-        statusMessage.style.color = isError ? '#b00020' : '#555';
-        showTaskLog();
-      }
-
-      function updateOutput(output) {
-        outputArea.textContent = output;
-        showTaskLog();
-      }
-
-      function updateLoggedPrompt(promptText) {
         loggedPrompt.textContent = 'Prompt: "' + promptText + '"';
         loggedPrompt.style.display = 'block';
+
+        taskLogContainer.prepend(taskLogEntry); // Add new entry to the top
+
+        return { taskLogEntry, loggedPrompt, statusMessage, outputArea };
       }
 
-      function clearLoggedPrompt() {
-        loggedPrompt.textContent = '';
-        loggedPrompt.style.display = 'none';
+      function showStatus(statusMessageElement, message, isError = false) {
+        statusMessageElement.textContent = message;
+        statusMessageElement.style.color = isError ? '#b00020' : '#555';
       }
 
-      function setTaskLogStyle(statusType) {
+      function updateOutput(outputAreaElement, output) {
+        outputAreaElement.textContent = output;
+      }
+
+      function setTaskLogStyle(taskLogElement, statusType) {
         switch (statusType) {
           case 'running':
-            taskLog.style.backgroundColor = '#fff3e0'; // Light orange background
-            taskLog.style.borderColor = '#ff9800';   // Sharper orange border
+            taskLogElement.style.backgroundColor = '#fff3e0'; // Light orange background
+            taskLogElement.style.borderColor = '#ff9800';   // Sharper orange border
             break;
           case 'success':
-            taskLog.style.backgroundColor = '#e8f5e9'; // Light green background
-            taskLog.style.borderColor = '#4caf50';   // Sharper green border
+            taskLogElement.style.backgroundColor = '#e8f5e9'; // Light green background
+            taskLogElement.style.borderColor = '#4caf50';   // Sharper green border
             break;
           case 'error':
-            taskLog.style.backgroundColor = '#ffebee'; // Light red background
-            taskLog.style.borderColor = '#f44336';   // Sharper red border
+            taskLogElement.style.backgroundColor = '#ffebee'; // Light red background
+            taskLogElement.style.borderColor = '#f44336';   // Sharper red border
             break;
           default: // Default or initial state
-            taskLog.style.backgroundColor = '#fcfcfc';
-            taskLog.style.borderColor = '#ddd';
+            taskLogElement.style.backgroundColor = '#fcfcfc';
+            taskLogElement.style.borderColor = '#ddd';
             break;
         }
-      }
-
-      function clearOutput() {
-        outputArea.textContent = '';
-        statusMessage.textContent = '';
-        clearLoggedPrompt();
-        setTaskLogStyle('default'); // Reset style to default
-        hideTaskLog();
       }
 
       function enableForm() {
@@ -285,27 +280,33 @@ const notebookHTML = `<!DOCTYPE html>
       }
 
       async function pollTask(taskId) {
+        const taskUI = activeTasks[taskId];
+        if (!taskUI) {
+          console.error('UI elements not found for task:', taskId);
+          // If pollingIntervalId exists, clear it before deleting
+          if (activeTasks[taskId] && activeTasks[taskId].pollingIntervalId) {
+            clearInterval(activeTasks[taskId].pollingIntervalId);
+          }
+          delete activeTasks[taskId];
+          return;
+        }
+
         try {
-          // Fetch summarized task data (status message, LLM summary, AND raw output)
           const response = await fetch('/api/summarize-task/' + taskId);
           const data = await response.json();
 
           let displayStatusMessage = '';
           if (!response.ok) {
-            // Log this error but don't stop the polling or general status display
             console.error('Failed to fetch task summary:', data.error || 'Unknown error');
             displayStatusMessage = 'Could not fetch summary: ' + (data.error || 'Unknown error');
           } else {
-            updateOutput(data.output); // Update raw output area using data from summarize-task endpoint
+            updateOutput(taskUI.outputArea, data.output);
 
-            // Check if there's a meaningful summary
             const hasSummary = data.summary && data.summary !== "No output available yet.";
 
-            // If task is running and we have a summary, use the more concise "Running..."
             if (data.status === 'running' && hasSummary) {
                 displayStatusMessage = "Running... " + data.summary;
             } else {
-                // Otherwise, use the server-provided status message and append summary if available
                 displayStatusMessage = data.statusMessage;
                 if (hasSummary) {
                     displayStatusMessage += " " + data.summary;
@@ -313,36 +314,39 @@ const notebookHTML = `<!DOCTYPE html>
             }
           }
 
-          // Update UI based on information from the single summarize-task endpoint
           switch (data.status) {
             case 'running':
-              setTaskLogStyle('running');
-              showStatus(displayStatusMessage, false);
+              setTaskLogStyle(taskUI.taskLogEntry, 'running');
+              showStatus(taskUI.statusMessage, displayStatusMessage, false);
               break;
             case 'success':
-              setTaskLogStyle('success');
-              showStatus(displayStatusMessage, false);
-              clearInterval(pollingIntervalId);
-              enableForm();
+              setTaskLogStyle(taskUI.taskLogEntry, 'success');
+              showStatus(taskUI.statusMessage, displayStatusMessage, false);
+              clearInterval(taskUI.pollingIntervalId);
+              delete activeTasks[taskId]; // Remove from active tasks
+              enableForm(); // Re-enable form once this task is done
               break;
             case 'error':
-              setTaskLogStyle('error');
-              showStatus(displayStatusMessage, true);
-              clearInterval(pollingIntervalId);
-              enableForm();
+              setTaskLogStyle(taskUI.taskLogEntry, 'error');
+              showStatus(taskUI.statusMessage, displayStatusMessage, true);
+              clearInterval(taskUI.pollingIntervalId);
+              delete activeTasks[taskId]; // Remove from active tasks
+              enableForm(); // Re-enable form once this task is done
               break;
             default: // Fallback for unknown states
-              setTaskLogStyle('default');
-              showStatus("Unknown task status: " + data.status, true);
-              clearInterval(pollingIntervalId);
-              enableForm();
+              setTaskLogStyle(taskUI.taskLogEntry, 'default');
+              showStatus(taskUI.statusMessage, "Unknown task status: " + data.status, true);
+              clearInterval(taskUI.pollingIntervalId);
+              delete activeTasks[taskId]; // Remove from active tasks
+              enableForm(); // Re-enable form once this task is done
           }
 
         } catch (error) {
-          setTaskLogStyle('error');
-          showStatus('Summarization polling failed: ' + error.message, true);
-          clearInterval(pollingIntervalId);
-          enableForm();
+          setTaskLogStyle(taskUI.taskLogEntry, 'error');
+          showStatus(taskUI.statusMessage, 'Summarization polling failed: ' + error.message, true);
+          clearInterval(taskUI.pollingIntervalId);
+          delete activeTasks[taskId]; // Remove from active tasks
+          enableForm(); // Re-enable form once this task is done
         }
       }
 
@@ -355,15 +359,15 @@ const notebookHTML = `<!DOCTYPE html>
 
         const prompt = promptInput.value.trim();
         if (!prompt) {
-          showStatus("Prompt cannot be empty.", true);
+          alert("Prompt cannot be empty.");
           return;
         }
 
         disableForm();
-        clearOutput(); // This will also reset the style to default
-        updateLoggedPrompt(prompt);
-        setTaskLogStyle('running'); // Set running style immediately
-        showStatus("Starting task..."); // Update text status
+
+        const newUI = createTaskLogUI(prompt);
+        showStatus(newUI.statusMessage, "Starting task...");
+        setTaskLogStyle(newUI.taskLogEntry, 'running');
 
         let taskId;
         try {
@@ -378,26 +382,35 @@ const notebookHTML = `<!DOCTYPE html>
           }
           taskId = data.taskId;
         } catch (error) {
-          setTaskLogStyle('error'); // Set error style for task start failures
-          showStatus('Error starting task: ' + error.message, true);
+          setTaskLogStyle(newUI.taskLogEntry, 'error');
+          showStatus(newUI.statusMessage, 'Error starting task: ' + error.message, true);
           enableForm();
+          // Optionally, remove the newUI element if the task couldn't even start
+          newUI.taskLogEntry.remove();
           return;
         }
 
         if (!taskId) {
-          showStatus('Error: Did not receive a task ID from server.', true);
+          showStatus(newUI.statusMessage, 'Error: Did not receive a task ID from server.', true);
           enableForm();
+          newUI.taskLogEntry.remove(); // Remove if no task ID
           return;
         }
 
-        showStatus("Task started, waiting for updates...");
-        // Start polling immediately and then every second
-        pollTask(taskId); // Initial poll
-        pollingIntervalId = setInterval(() => pollTask(taskId), 1000);
+        activeTasks[taskId] = {
+          ...newUI,
+          pollingIntervalId: null,
+        };
+
+        showStatus(newUI.statusMessage, "Task started, waiting for updates...");
+        pollTask(taskId);
+        activeTasks[taskId].pollingIntervalId = setInterval(() => pollTask(taskId), 1000);
+
+        promptInput.value = ''; // Clear prompt input after submission
       });
 
       // Initialize state on page load
-      clearOutput();
+      enableForm();
     })();
     </script>
 </body>
