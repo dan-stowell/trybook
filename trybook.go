@@ -195,11 +195,9 @@ const notebookHTML = `<!DOCTYPE html>
     </template>
 
     <template id="taskLogTemplate">
-      <div class="task-log-entry" style="margin-top: 1rem; padding: 0.5rem 1rem; border: 1px solid #ddd; border-radius: 4px; background-color: #fcfcfc; text-align: left;">
-        <pre class="output-area" style="white-space: pre-wrap; font-family: monospace; text-align: left; margin: 0;"></pre>
-        <div style="margin-top: 0.5rem; text-align: right;">
-          <button class="toggle-raw-output" style="font-size: 0.8rem; padding: 0.2rem 0.5rem; display: none;">Show Raw Output</button>
-        </div>
+      <div class="task-log-entry" style="margin-top: 1rem; padding: 0.5rem 1rem; border: 1px solid #ddd; border-radius: 4px; background-color: #fcfcfc; text-align: left; position: relative;">
+        <span class="toggle-raw-output" style="position: absolute; left: 0.5rem; top: 0.7rem; cursor: pointer; font-size: 0.8em; color: #666; transition: transform 0.2s; user-select: none; display: none;">▶</span>
+        <pre class="output-area" style="white-space: pre-wrap; font-family: monospace; text-align: left; margin: 0; padding-left: 1.2em;"></pre>
         <pre class="raw-output-area" style="white-space: pre-wrap; font-family: monospace; text-align: left; margin: 0; background-color: #eee; padding: 0.5rem; border-radius: 4px; display: none; max-height: 200px; overflow-y: auto;"></pre>
       </div>
     </template>
@@ -237,8 +235,8 @@ const notebookHTML = `<!DOCTYPE html>
         // Create task log entry
         const taskClone = document.importNode(taskLogTemplate.content, true);
         const taskLogEntry = taskClone.querySelector('.task-log-entry');
-        const outputArea = taskLogEntry.querySelector('.output-area');
         const toggleButton = taskLogEntry.querySelector('.toggle-raw-output');
+        const outputArea = taskLogEntry.querySelector('.output-area');
         const rawOutputArea = taskLogEntry.querySelector('.raw-output-area');
         taskLogContainer.append(taskLogEntry); // Append task box after prompt box
 
@@ -306,9 +304,9 @@ const notebookHTML = `<!DOCTYPE html>
           updateRawOutput(taskUI.rawOutputArea, data.output || "");
 
           if (data.output && data.output.trim() !== "") {
-            taskUI.toggleButton.style.display = 'inline-block';
+            taskUI.toggleButton.style.display = 'inline-block'; // Show the caret
           } else {
-            taskUI.toggleButton.style.display = 'none';
+            taskUI.toggleButton.style.display = 'none'; // Hide the caret
           }
 
           if (!response.ok) {
@@ -370,6 +368,7 @@ const notebookHTML = `<!DOCTYPE html>
         updateOutput(newUI.outputArea, "Starting task...");
         updateRawOutput(newUI.rawOutputArea, "No raw output yet."); // Initialize raw output
         newUI.toggleButton.style.display = 'none'; // Initially hide toggle button
+        newUI.toggleButton.style.transform = 'rotate(0deg)'; // Ensure caret starts pointing right
         newUI.rawOutputArea.style.display = 'none'; // Initially hide raw output area
         setTaskLogStyle(newUI.taskLogEntry, 'running');
 
@@ -377,10 +376,12 @@ const notebookHTML = `<!DOCTYPE html>
         newUI.toggleButton.addEventListener('click', function() {
           if (newUI.rawOutputArea.style.display === 'none') {
             newUI.rawOutputArea.style.display = 'block';
-            newUI.toggleButton.textContent = 'Hide Raw Output';
+            newUI.toggleButton.style.transform = 'rotate(90deg)'; // Point down
+            newUI.toggleButton.style.color = '#333'; // Make it a bit darker when open
           } else {
             newUI.rawOutputArea.style.display = 'none';
-            newUI.toggleButton.textContent = 'Show Raw Output';
+            newUI.toggleButton.style.transform = 'rotate(0deg)'; // Point right
+            newUI.toggleButton.style.color = '#666'; // Back to default color
           }
         });
 
