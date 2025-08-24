@@ -11,12 +11,13 @@ import (
 	"net/http"
 	"os"
 	"os/user"
+	"bufio" // Added for streaming command output
 	"os/exec"
 	"os/signal"
 	"math/rand"
 	"path/filepath"
 	"strings"
-	"sync"
+	"sync" // Already present
 	"syscall"
 	"time"
 )
@@ -44,22 +45,24 @@ const indexHTML = `<!DOCTYPE html>
   .sugg-desc { color: #555; font-size: 0.9rem; }
 </style>
 </head>
-<body style="text-align:center;">
-  <h1>trybook</h1>
-  <form method="GET" action="/">
-    <div style="display: flex; max-width: 40rem; margin: 0 auto; gap: 0.5rem;">
-      <input type="url" id="repoUrl" name="repo" placeholder="github repo" value="{{.Query}}" autofocus style="flex-grow: 1; font-size: 1.25rem; padding: 0.6rem 0.75rem;">
-      <button type="submit" style="font-size: 1.1rem; padding: 0.6rem 1rem;">Open</button>
-    </div>
-  </form>
-  <div id="suggestions"></div>
+<body style="padding: 1rem; text-align: left;">
+  <div>
+    <h1>trybook</h1>
+    <form method="GET" action="/">
+      <div style="display: flex; gap: 0.5rem;">
+        <input type="url" id="repoUrl" name="repo" placeholder="github repo" value="{{.Query}}" autofocus style="flex-grow: 1; font-size: 1.25rem; padding: 0.6rem 0.75rem;">
+        <button type="submit" style="font-size: 1.1rem; padding: 0.6rem 1rem;">Open</button>
+      </div>
+    </form>
+    <div id="suggestions" style="margin-top: 0.5rem; text-align: left;"></div>
 
-  {{if .Error}}
-  <p style="color: #b00020; font-size: 0.95rem; margin-top: 1rem; white-space: pre-wrap;">Error: {{.Error}}</p>
-  {{end}}
-  {{if .Result}}
-  <p style="color: #0a7; font-size: 0.95rem; margin-top: 1rem; white-space: pre-wrap;">{{.Result}}</p>
-  {{end}}
+    {{if .Error}}
+    <p style="color: #b00020; font-size: 0.95rem; margin-top: 1rem; white-space: pre-wrap;">Error: {{.Error}}</p>
+    {{end}}
+    {{if .Result}}
+    <p style="color: #0a7; font-size: 0.95rem; margin-top: 1rem; white-space: pre-wrap;">{{.Result}}</p>
+    {{end}}
+  </div>
 <script>
 (function(){
   const input = document.getElementById('repoUrl');
@@ -126,19 +129,21 @@ const repoHTML = `<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>trybook - {{.RepoName}}</title>
 </head>
-<body style="text-align:center;">
-  <h1>trybook</h1>
-  <p>Repository: <strong><a href="https://github.com/{{.Owner}}/{{.Repo}}">{{.RepoName}}</a></strong></p>
-  <p>Cloned Commit: <code>{{.CommitHash}}</code></p>
+<body style="padding: 1rem; text-align: left;">
+  <div>
+    <h1>trybook</h1>
+    <p>Repository: <strong><a href="https://github.com/{{.Owner}}/{{.Repo}}" style="color: #007bff;">{{.RepoName}}</a></strong></p>
+    <p>Cloned Commit: <code>{{.CommitHash}}</code></p>
 
-  <form method="POST" action="/create-notebook/{{.Owner}}/{{.Repo}}" style="margin-top: 2rem;">
-    <button type="submit" style="font-size: 1.1rem; padding: 0.6rem 1rem;">Create Notebook</button>
-  </form>
+    <form method="POST" action="/create-notebook/{{.Owner}}/{{.Repo}}" style="margin-top: 2rem;">
+      <button type="submit" style="font-size: 1.1rem; padding: 0.6rem 1rem;">Create Notebook</button>
+    </form>
 
-  {{if .Error}}
-  <p style="color: #b00020; font-size: 0.95rem; margin-top: 1rem; white-space: pre-wrap;">Error: {{.Error}}</p>
-  {{end}}
-  <p style="margin-top: 2rem;"><a href="/">Back to search</a></p>
+    {{if .Error}}
+    <p style="color: #b00020; font-size: 0.95rem; margin-top: 1rem; white-space: pre-wrap;">Error: {{.Error}}</p>
+    {{end}}
+    <p style="margin-top: 2rem;"><a href="/">Back to search</a></p>
+  </div>
 </body>
 </html>
 `
@@ -150,6 +155,8 @@ type Task struct {
 	status string // "running", "success", "error"
 	done   bool   // if true, the task has finished processing (either success or error)
 	err    error  // Stores the Go error if task failed
+	finalSummary string // Stores the one-time generated final summary
+	hasFinalSummary bool // Indicates if finalSummary has been generated
 }
 
 var (
@@ -168,46 +175,100 @@ const notebookHTML = `<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>trybook - {{.NotebookName}}</title>
+<style>
+  html, body { margin: 0; padding: 0; }
+  body { display: flex; flex-direction: column; min-height: 100vh; }
+  .content-wrapper { flex-grow: 1; padding: 1rem; text-align: left; }
+  #promptForm { padding: 1rem; background-color: #f0f0f0; border-top: 1px solid #ccc; }
+  /* Ensure no extra margins push content away */
+  #taskLog { margin-top: 1rem; padding: 0.5rem 1rem; border: 1px solid #ddd; border-radius: 4px; background-color: #fcfcfc; text-align: left; display: none; }
+</style>
 </head>
 <body>
-  <div style="max-width: 60rem; margin: 0 auto; padding: 1rem; text-align: left;">
-    <h1>{{.NotebookName}}</h1>
-    <div style="margin-bottom: 1.5rem; padding: 0.5rem 1rem; background-color: #f8f8f8; border: 1px solid #eee; border-radius: 4px; font-size: 0.9rem;">
-      <p style="margin: 0.2rem 0;">Repository: <strong><a href="https://github.com/{{.Owner}}/{{.Repo}}">{{.RepoName}}</a></strong></p>
-      <p style="margin: 0.2rem 0;">Branch: <code>{{.BranchName}}</code></p>
-      <p style="margin: 0.2rem 0;">Worktree Path: <code>{{.WorktreePath}}</code></p>
-    </div>
+  <div class="content-wrapper">
+    <h1><a href="https://github.com/{{.Owner}}/{{.Repo}}" style="color: #007bff;">{{.RepoName}}</a> / {{.NotebookName}}</h1>
 
-    <form id="promptForm" method="POST" action="/api/run-prompt/{{.Owner}}/{{.Repo}}/{{.NotebookName}}" style="margin-top: 2rem;">
+    <div id="taskLogContainer"></div>
+
+    <template id="promptLogTemplate">
+      <div class="prompt-log-entry" style="margin-top: 1rem; padding: 0.5rem 1rem; border: 1px solid #64B5F6; border-radius: 4px; background-color: #E3F2FD; text-align: left; font-style: italic; color: #3F51B5; word-wrap: break-word;"></div>
+    </template>
+
+    <template id="taskLogTemplate">
+      <div class="task-log-entry" style="margin-top: 1rem; padding: 0.5rem 1rem; border: 1px solid #ddd; border-radius: 4px; background-color: #fcfcfc; text-align: left;">
+        <div class="status-message" style="margin-bottom: 0.5rem; color: #555;"></div>
+        <pre class="output-area" style="white-space: pre-wrap; font-family: monospace; text-align: left; margin: 0;"></pre>
+      </div>
+    </template>
+
+    {{if .Error}}
+    <p style="color: #b00020; font-size: 0.95rem; margin-top: 1rem; white-space: pre-wrap;">Error: {{.Error}}</p>
+    {{end}}
+  </div>
+
+  <form id="promptForm" method="POST" action="/api/run-prompt/{{.Owner}}/{{.Repo}}/{{.NotebookName}}">
       <div style="display: flex; gap: 0.5rem;">
         <input type="text" id="promptInput" name="prompt" placeholder="question? or tell me to do something" style="flex-grow: 1; font-size: 1.25rem; padding: 0.6rem 0.75rem; box-sizing: border-box;">
         <button type="submit" style="font-size: 1.1rem; padding: 0.6rem 1rem;">run</button>
       </div>
     </form>
 
-    <div id="statusMessage" style="margin-top: 1rem; color: #555;"></div>
-    <pre id="outputArea" style="margin-top: 1rem; padding: 0.5rem 1rem; background-color: #f7f7f7; border: 1px solid #ddd; border-radius: 4px; white-space: pre-wrap; font-family: monospace; text-align: left;"></pre>
-
     <script>
     (function() {
       const promptInput = document.getElementById('promptInput');
       const promptForm = document.getElementById('promptForm');
-      const statusMessage = document.getElementById('statusMessage');
-      const outputArea = document.getElementById('outputArea');
+      const taskLogContainer = document.getElementById('taskLogContainer');
+      const taskLogTemplate = document.getElementById('taskLogTemplate');
+
       let isSubmitting = false; // Flag to prevent multiple submissions
-      let pollingIntervalId = null; // To store the interval ID for polling
+      // taskId -> {promptLogEntry, taskLogEntry, statusMessage, outputArea, pollingIntervalId}
+      const activeTasks = {}; 
 
-      function showStatus(message, isError = false) {
-        statusMessage.textContent = message;
-        statusMessage.style.color = isError ? '#b00020' : '#555';
+      function createTaskLogUI(promptText) {
+        // Create prompt log entry
+        const promptClone = document.importNode(promptLogTemplate.content, true);
+        const promptLogEntry = promptClone.querySelector('.prompt-log-entry');
+        promptLogEntry.textContent = 'Prompt: "' + promptText + '"';
+        taskLogContainer.append(promptLogEntry); // Append prompt box first
+
+        // Create task log entry
+        const taskClone = document.importNode(taskLogTemplate.content, true);
+        const taskLogEntry = taskClone.querySelector('.task-log-entry');
+        const statusMessage = taskLogEntry.querySelector('.status-message');
+        const outputArea = taskLogEntry.querySelector('.output-area');
+        taskLogContainer.append(taskLogEntry); // Append task box after prompt box
+
+        return { promptLogEntry, taskLogEntry, statusMessage, outputArea };
       }
 
-      function updateOutput(output) {
-        outputArea.textContent = output;
+      function showStatus(statusMessageElement, message, isError = false) {
+        statusMessageElement.textContent = message;
+        statusMessageElement.style.color = isError ? '#b00020' : '#555';
       }
 
-      function clearOutput() {
-        outputArea.textContent = '';
+      function updateOutput(outputAreaElement, output) {
+        outputAreaElement.textContent = output;
+      }
+
+      function setTaskLogStyle(taskLogElement, statusType) {
+        switch (statusType) {
+          case 'running':
+            taskLogElement.style.backgroundColor = '#fff3e0'; // Light orange background
+            taskLogElement.style.borderColor = '#ff9800';   // Sharper orange border
+            break;
+          case 'success':
+            taskLogElement.style.backgroundColor = '#e8f5e9'; // Light green background
+            taskLogElement.style.borderColor = '#4caf50';   // Sharper green border
+            break;
+          case 'error':
+            taskLogElement.style.backgroundColor = '#ffebee'; // Light red background
+            taskLogElement.style.borderColor = '#f44336';   // Sharper red border
+            break;
+          default: // Default or initial state
+            taskLogElement.style.backgroundColor = '#fcfcfc';
+            taskLogElement.style.borderColor = '#ddd';
+            break;
+        }
       }
 
       function enableForm() {
@@ -224,40 +285,76 @@ const notebookHTML = `<!DOCTYPE html>
       }
 
       async function pollTask(taskId) {
+        const taskUI = activeTasks[taskId];
+        if (!taskUI) {
+          console.error('UI elements not found for task:', taskId);
+          // If pollingIntervalId exists, clear it before deleting
+          if (activeTasks[taskId] && activeTasks[taskId].pollingIntervalId) {
+            clearInterval(activeTasks[taskId].pollingIntervalId);
+          }
+          delete activeTasks[taskId];
+          return;
+        }
+
         try {
-          const response = await fetch('/api/poll-task/' + taskId);
+          const response = await fetch('/api/summarize-task/' + taskId);
           const data = await response.json();
 
+          let displayStatusMessage = '';
           if (!response.ok) {
-            throw new Error(data.error || 'Failed to poll task');
-          }
+            console.error('Failed to fetch task summary:', data.error || 'Unknown error');
+            displayStatusMessage = 'Could not fetch summary: ' + (data.error || 'Unknown error');
+          } else {
+            updateOutput(taskUI.outputArea, data.output);
 
-          updateOutput(data.output);
+            const hasSummary = data.summary && data.summary !== "No output available yet.";
+
+            if (data.status === 'running') {
+                displayStatusMessage = "Running...";
+                if (hasSummary) {
+                    displayStatusMessage += " " + data.summary;
+                }
+            } else {
+                displayStatusMessage = data.statusMessage;
+                if (hasSummary) {
+                    displayStatusMessage += " " + data.summary;
+                }
+            }
+          }
 
           switch (data.status) {
             case 'running':
-              showStatus("Task running...");
+              setTaskLogStyle(taskUI.taskLogEntry, 'running');
+              showStatus(taskUI.statusMessage, displayStatusMessage, false);
               break;
             case 'success':
-              showStatus("Task completed successfully.", false);
-              clearInterval(pollingIntervalId);
-              enableForm();
+              setTaskLogStyle(taskUI.taskLogEntry, 'success');
+              showStatus(taskUI.statusMessage, displayStatusMessage, false);
+              clearInterval(taskUI.pollingIntervalId);
+              delete activeTasks[taskId]; // Remove from active tasks
+              enableForm(); // Re-enable form once this task is done
               break;
             case 'error':
-              showStatus("Task error: " + (data.error || "Unknown error"), true);
-              clearInterval(pollingIntervalId);
-              enableForm();
+              setTaskLogStyle(taskUI.taskLogEntry, 'error');
+              showStatus(taskUI.statusMessage, displayStatusMessage, true);
+              clearInterval(taskUI.pollingIntervalId);
+              delete activeTasks[taskId]; // Remove from active tasks
+              enableForm(); // Re-enable form once this task is done
               break;
-            default:
-              showStatus("Unknown task status: " + data.status, true);
-              clearInterval(pollingIntervalId);
-              enableForm();
+            default: // Fallback for unknown states
+              setTaskLogStyle(taskUI.taskLogEntry, 'default');
+              showStatus(taskUI.statusMessage, "Unknown task status: " + data.status, true);
+              clearInterval(taskUI.pollingIntervalId);
+              delete activeTasks[taskId]; // Remove from active tasks
+              enableForm(); // Re-enable form once this task is done
           }
 
         } catch (error) {
-          showStatus('Polling failed: ' + error.message, true);
-          clearInterval(pollingIntervalId);
-          enableForm();
+          setTaskLogStyle(taskUI.taskLogEntry, 'error');
+          showStatus(taskUI.statusMessage, 'Summarization polling failed: ' + error.message, true);
+          clearInterval(taskUI.pollingIntervalId);
+          delete activeTasks[taskId]; // Remove from active tasks
+          enableForm(); // Re-enable form once this task is done
         }
       }
 
@@ -270,13 +367,15 @@ const notebookHTML = `<!DOCTYPE html>
 
         const prompt = promptInput.value.trim();
         if (!prompt) {
-          showStatus("Prompt cannot be empty.", true);
+          alert("Prompt cannot be empty.");
           return;
         }
 
         disableForm();
-        clearOutput();
-        showStatus("Starting task...");
+
+        const newUI = createTaskLogUI(prompt);
+        showStatus(newUI.statusMessage, "Starting task...");
+        setTaskLogStyle(newUI.taskLogEntry, 'running');
 
         let taskId;
         try {
@@ -291,30 +390,43 @@ const notebookHTML = `<!DOCTYPE html>
           }
           taskId = data.taskId;
         } catch (error) {
-          showStatus('Error starting task: ' + error.message, true);
+          setTaskLogStyle(newUI.taskLogEntry, 'error');
+          showStatus(newUI.statusMessage, 'Error starting task: ' + error.message, true);
           enableForm();
+          // Remove both the prompt and task log entries if the task couldn't even start
+          newUI.promptLogEntry.remove();
+          newUI.taskLogEntry.remove();
           return;
         }
 
         if (!taskId) {
-          showStatus('Error: Did not receive a task ID from server.', true);
+          showStatus(newUI.statusMessage, 'Error: Did not receive a task ID from server.', true);
           enableForm();
+          // Remove both entries if no task ID was received
+          newUI.promptLogEntry.remove();
+          newUI.taskLogEntry.remove(); 
           return;
         }
 
-        showStatus("Task started, waiting for updates...");
-        // Start polling immediately and then every second
-        pollTask(taskId); // Initial poll
-        pollingIntervalId = setInterval(() => pollTask(taskId), 1000);
+        activeTasks[taskId] = {
+          promptLogEntry: newUI.promptLogEntry,
+          taskLogEntry: newUI.taskLogEntry,
+          statusMessage: newUI.statusMessage,
+          outputArea: newUI.outputArea,
+          pollingIntervalId: null,
+        };
+
+        showStatus(newUI.statusMessage, "Task started, waiting for updates...");
+        pollTask(taskId);
+        activeTasks[taskId].pollingIntervalId = setInterval(() => pollTask(taskId), 1000);
+
+        promptInput.value = ''; // Clear prompt input after submission
       });
+
+      // Initialize state on page load
+      enableForm();
     })();
     </script>
-
-    {{if .Error}}
-    <p style="color: #b00020; font-size: 0.95rem; margin-top: 1rem; white-space: pre-wrap;">Error: {{.Error}}</p>
-    {{end}}
-    <p style="margin-top: 2rem;"><a href="/repo/{{.Owner}}/{{.Repo}}">Back to repository</a> | <a href="/">Back to search</a></p>
-  </div>
 </body>
 </html>
 `
@@ -370,6 +482,7 @@ func main() {
 	mux.HandleFunc("/notebook/", notebookHandler)         // GET /notebook/{owner}/{repo}/{notebook_name}
 	mux.HandleFunc("/api/run-prompt/", apiRunPromptHandler) // POST /api/run-prompt/{owner}/{repo}/{notebook_name}
 	mux.HandleFunc("/api/poll-task/", apiPollTaskHandler)   // GET /api/poll-task/{task_id}
+	mux.HandleFunc("/api/summarize-task/", apiSummarizeTaskHandler) // GET /api/summarize-task/{task_id}
 
 	addr := "127.0.0.1:8080"
 
@@ -461,6 +574,38 @@ func runGeminiStreaming(ctx context.Context, worktreePath, prompt string) (*exec
 	return cmd, stdout, stderr, nil
 }
 
+// runGeminiSummary invokes the llm command with a summarization prompt.
+// It uses the gpt-5-nano model and asks for a single-sentence summary.
+func runGeminiSummary(ctx context.Context, textToSummarize string) (string, error) {
+	if textToSummarize == "" {
+		return "", nil // Nothing to summarize
+	}
+	log.Printf("Running llm for summary of text length %d", len(textToSummarize))
+
+	// Define the command to use 'llm' with 'gpt-5-nano' model and a summarization system prompt.
+	cmd := exec.CommandContext(ctx, "llm", "--model", "gpt-5-nano", "-s", "Please summarize this answer in a single sentence.")
+
+	// Set up stdin for the llm command to pass the textToSummarize
+	cmd.Stdin = strings.NewReader(textToSummarize)
+
+	// Pass through OPENAI_API_KEY if it's set in the parent environment.
+	// os.Environ() already includes parent environment variables, so we only
+	// explicitly add it here if we want to ensure its presence or override it.
+	openaiKey := os.Getenv("OPENAI_API_KEY")
+	if openaiKey != "" {
+		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "OPENAI_API_KEY="+openaiKey)
+	} else {
+		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	}
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("LLM summarization failed: %v\nOutput:\n%s", err, string(out))
+		return "", fmt.Errorf("llm summarization failed: %w (output: %s)", err, string(out))
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 
 // apiRunPromptHandler starts a long-running Gemini task.
 func apiRunPromptHandler(w http.ResponseWriter, r *http.Request) {
@@ -520,13 +665,79 @@ func executePromptTask(task *Task, worktreePath, prompt, notebookName string) {
 	cmd.Dir = worktreePath
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 
-	// Use CombinedOutput to capture both stdout and stderr
-	outputBytes, err := cmd.CombinedOutput()
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		task.mu.Lock()
+		task.err = fmt.Errorf("failed to get stdout pipe: %w", err)
+		task.status = "error"
+		task.done = true
+		task.mu.Unlock()
+		log.Printf("Gemini command for %s failed to get stdout pipe: %v", notebookName, err)
+		return
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		task.mu.Lock()
+		task.err = fmt.Errorf("failed to get stderr pipe: %w", err)
+		task.status = "error"
+		task.done = true
+		task.mu.Unlock()
+		log.Printf("Gemini command for %s failed to get stderr pipe: %v", notebookName, err)
+		return
+	}
+
+	if err := cmd.Start(); err != nil {
+		task.mu.Lock()
+		task.err = fmt.Errorf("failed to start gemini command: %w", err)
+		task.status = "error"
+		task.done = true
+		task.mu.Unlock()
+		log.Printf("Gemini command for %s failed to start: %v", notebookName, err)
+		return
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2) // Two goroutines for stdout and stderr
+
+	// Goroutine to read stdout
+	go func() {
+		defer wg.Done()
+		scanner := bufio.NewScanner(stdoutPipe)
+		for scanner.Scan() {
+			line := scanner.Text()
+			task.mu.Lock()
+			task.output += line + "\n" // Append line by line
+			task.mu.Unlock()
+		}
+		if err := scanner.Err(); err != nil {
+			log.Printf("Error reading stdout for task %s: %v", notebookName, err)
+		}
+	}()
+
+	// Goroutine to read stderr
+	go func() {
+		defer wg.Done()
+		scanner := bufio.NewScanner(stderrPipe)
+		for scanner.Scan() {
+			line := scanner.Text()
+			task.mu.Lock()
+			task.output += line + "\n" // Append line by line
+			task.mu.Unlock()
+		}
+		if err := scanner.Err(); err != nil {
+			log.Printf("Error reading stderr for task %s: %v", notebookName, err)
+		}
+	}()
+
+	wg.Wait() // Wait for both readers to finish after pipes are closed
+
+	// Wait for the command to exit
+	err = cmd.Wait()
 
 	task.mu.Lock()
 	defer task.mu.Unlock() // Ensure unlock happens
 
-	task.output = strings.TrimSpace(string(outputBytes))
+	task.output = strings.TrimSpace(task.output) // Trim after all output is collected
 	task.done = true
 
 	if err != nil {
@@ -574,6 +785,107 @@ func apiPollTaskHandler(w http.ResponseWriter, r *http.Request) {
 		resp["error"] = task.err.Error()
 	}
 	task.mu.RUnlock()
+
+	json.NewEncoder(w).Encode(resp)
+}
+
+// apiSummarizeTaskHandler returns a summary of a task's status and output.
+func apiSummarizeTaskHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error": "Method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) < 4 || parts[2] != "summarize-task" {
+		http.Error(w, `{"error": "Invalid API URL"}`, http.StatusBadRequest)
+		return
+	}
+	taskID := parts[3]
+
+	tasksMu.RLock()
+	task, ok := tasks[taskID]
+	tasksMu.RUnlock()
+
+	if !ok {
+		http.Error(w, `{"error": "Task not found"}`, http.StatusNotFound)
+		return
+	}
+
+	task.mu.RLock()
+	currentStatus := task.status
+	currentOutput := task.output
+	taskErr := task.err
+	taskDone := task.done
+	cachedFinalSummary := task.finalSummary
+	cachedHasFinalSummary := task.hasFinalSummary
+	task.mu.RUnlock()
+
+	var summary string
+	if cachedHasFinalSummary {
+		summary = cachedFinalSummary // Use cached summary if already generated
+	} else if taskDone { // Task is done, but final summary not yet generated
+		if currentOutput != "" {
+			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+			defer cancel()
+			s, err := runGeminiSummary(ctx, currentOutput)
+			if err != nil {
+				log.Printf("Failed to generate final summary for task %s: %v", taskID, err)
+				summary = "Could not generate final summary."
+			} else {
+				summary = s
+				// Cache the generated summary for future requests
+				task.mu.Lock()
+				task.finalSummary = summary
+				task.hasFinalSummary = true
+				task.mu.Unlock()
+			}
+		} else {
+			summary = "No output available for final summary."
+		}
+	} else { // Task is still running, generate a real-time summary
+		if currentOutput != "" {
+			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second) // Give LLM some time
+			defer cancel()
+			s, err := runGeminiSummary(ctx, currentOutput)
+			if err != nil {
+				log.Printf("Failed to generate running summary for task %s: %v", taskID, err)
+				summary = "Could not generate summary." // Fallback summary
+			} else {
+				summary = s
+			}
+		} else {
+			summary = "No output available yet."
+		}
+	}
+
+    // Determine overall message based on status for a single sentence summary
+    var statusMessage string
+    switch currentStatus {
+    case "running":
+        statusMessage = "Task is currently running."
+    case "success":
+        statusMessage = "Task completed successfully."
+    case "error":
+        statusMessage = "Task exited with an error."
+        if taskErr != nil {
+            statusMessage = fmt.Sprintf("Task exited with an error: %v", taskErr.Error())
+        }
+    default:
+        statusMessage = "Task status is unknown."
+    }
+
+	resp := map[string]interface{}{
+		"taskId": taskID,
+		"status": currentStatus,
+		"statusMessage": statusMessage,
+		"summary": summary,
+		"output": currentOutput, // Add raw output to the response
+	}
+	if taskErr != nil {
+		resp["error"] = taskErr.Error()
+	}
 
 	json.NewEncoder(w).Encode(resp)
 }
