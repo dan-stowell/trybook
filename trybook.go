@@ -190,9 +190,12 @@ const notebookHTML = `<!DOCTYPE html>
 
     <div id="taskLogContainer"></div>
 
+    <template id="promptLogTemplate">
+      <div class="prompt-log-entry" style="margin-top: 1rem; padding: 0.5rem 1rem; border: 1px solid #64B5F6; border-radius: 4px; background-color: #E3F2FD; text-align: left; font-style: italic; color: #3F51B5; word-wrap: break-word;"></div>
+    </template>
+
     <template id="taskLogTemplate">
       <div class="task-log-entry" style="margin-top: 1rem; padding: 0.5rem 1rem; border: 1px solid #ddd; border-radius: 4px; background-color: #fcfcfc; text-align: left;">
-        <div class="logged-prompt" style="margin-bottom: 0.75rem; font-style: italic; color: #666; word-wrap: break-word; display: none;"></div>
         <div class="status-message" style="margin-bottom: 0.5rem; color: #555;"></div>
         <pre class="output-area" style="white-space: pre-wrap; font-family: monospace; text-align: left; margin: 0;"></pre>
       </div>
@@ -219,21 +222,24 @@ const notebookHTML = `<!DOCTYPE html>
       const taskLogTemplate = document.getElementById('taskLogTemplate');
 
       let isSubmitting = false; // Flag to prevent multiple submissions
-      const activeTasks = {}; // taskId -> {taskLogEntry, loggedPrompt, statusMessage, outputArea, pollingIntervalId}
+      // taskId -> {promptLogEntry, taskLogEntry, statusMessage, outputArea, pollingIntervalId}
+      const activeTasks = {}; 
 
       function createTaskLogUI(promptText) {
-        const clone = document.importNode(taskLogTemplate.content, true);
-        const taskLogEntry = clone.querySelector('.task-log-entry');
-        const loggedPrompt = taskLogEntry.querySelector('.logged-prompt');
+        // Create prompt log entry
+        const promptClone = document.importNode(promptLogTemplate.content, true);
+        const promptLogEntry = promptClone.querySelector('.prompt-log-entry');
+        promptLogEntry.textContent = 'Prompt: "' + promptText + '"';
+        taskLogContainer.append(promptLogEntry); // Append prompt box first
+
+        // Create task log entry
+        const taskClone = document.importNode(taskLogTemplate.content, true);
+        const taskLogEntry = taskClone.querySelector('.task-log-entry');
         const statusMessage = taskLogEntry.querySelector('.status-message');
         const outputArea = taskLogEntry.querySelector('.output-area');
+        taskLogContainer.append(taskLogEntry); // Append task box after prompt box
 
-        loggedPrompt.textContent = 'Prompt: "' + promptText + '"';
-        loggedPrompt.style.display = 'block';
-
-        taskLogContainer.append(taskLogEntry); // Add new entry to the bottom
-
-        return { taskLogEntry, loggedPrompt, statusMessage, outputArea };
+        return { promptLogEntry, taskLogEntry, statusMessage, outputArea };
       }
 
       function showStatus(statusMessageElement, message, isError = false) {
@@ -385,7 +391,8 @@ const notebookHTML = `<!DOCTYPE html>
           setTaskLogStyle(newUI.taskLogEntry, 'error');
           showStatus(newUI.statusMessage, 'Error starting task: ' + error.message, true);
           enableForm();
-          // Optionally, remove the newUI element if the task couldn't even start
+          // Remove both the prompt and task log entries if the task couldn't even start
+          newUI.promptLogEntry.remove();
           newUI.taskLogEntry.remove();
           return;
         }
@@ -393,12 +400,17 @@ const notebookHTML = `<!DOCTYPE html>
         if (!taskId) {
           showStatus(newUI.statusMessage, 'Error: Did not receive a task ID from server.', true);
           enableForm();
-          newUI.taskLogEntry.remove(); // Remove if no task ID
+          // Remove both entries if no task ID was received
+          newUI.promptLogEntry.remove();
+          newUI.taskLogEntry.remove(); 
           return;
         }
 
         activeTasks[taskId] = {
-          ...newUI,
+          promptLogEntry: newUI.promptLogEntry,
+          taskLogEntry: newUI.taskLogEntry,
+          statusMessage: newUI.statusMessage,
+          outputArea: newUI.outputArea,
           pollingIntervalId: null,
         };
 
