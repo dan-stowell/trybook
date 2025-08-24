@@ -196,7 +196,6 @@ const notebookHTML = `<!DOCTYPE html>
 
     <template id="taskLogTemplate">
       <div class="task-log-entry" style="margin-top: 1rem; padding: 0.5rem 1rem; border: 1px solid #ddd; border-radius: 4px; background-color: #fcfcfc; text-align: left;">
-        <div class="status-message" style="margin-bottom: 0.5rem; color: #555;"></div>
         <pre class="output-area" style="white-space: pre-wrap; font-family: monospace; text-align: left; margin: 0;"></pre>
       </div>
     </template>
@@ -234,16 +233,10 @@ const notebookHTML = `<!DOCTYPE html>
         // Create task log entry
         const taskClone = document.importNode(taskLogTemplate.content, true);
         const taskLogEntry = taskClone.querySelector('.task-log-entry');
-        const statusMessage = taskLogEntry.querySelector('.status-message');
         const outputArea = taskLogEntry.querySelector('.output-area');
         taskLogContainer.append(taskLogEntry); // Append task box after prompt box
 
-        return { promptLogEntry, taskLogEntry, statusMessage, outputArea };
-      }
-
-      function showStatus(statusMessageElement, message, isError = false) {
-        statusMessageElement.textContent = message;
-        statusMessageElement.style.color = isError ? '#b00020' : '#555';
+        return { promptLogEntry, taskLogEntry, outputArea };
       }
 
       function updateOutput(outputAreaElement, output) {
@@ -300,59 +293,33 @@ const notebookHTML = `<!DOCTYPE html>
           const response = await fetch('/api/summarize-task/' + taskId);
           const data = await response.json();
 
-          let displayStatusMessage = '';
           if (!response.ok) {
             console.error('Failed to fetch task summary:', data.error || 'Unknown error');
-            displayStatusMessage = 'Could not fetch summary: ' + (data.error || 'Unknown error');
-            taskUI.outputArea.style.display = 'none'; // Hide output area on error fetching summary
-            taskUI.outputArea.textContent = ''; // Clear raw output content
+            updateOutput(taskUI.outputArea, 'Error fetching summary: ' + (data.error || 'Unknown error'));
           } else {
-            const hasSummary = data.summary && data.summary !== "No output available yet.";
-            const isTaskDone = data.status !== 'running';
-
-            if (!hasSummary && !isTaskDone) { // Only show raw output if running and no meaningful summary yet
-              updateOutput(taskUI.outputArea, data.output);
-              taskUI.outputArea.style.display = 'block';
-            } else {
-              taskUI.outputArea.style.display = 'none'; // Hide raw output
-              taskUI.outputArea.textContent = ''; // Clear raw output
-            }
-
-            if (data.status === 'running') {
-                displayStatusMessage = "Running...";
-                if (hasSummary) {
-                    displayStatusMessage += " " + data.summary;
-                }
-            } else { // 'success' or 'error'
-                displayStatusMessage = data.statusMessage;
-                if (hasSummary) {
-                    displayStatusMessage += " " + data.summary;
-                }
-            }
+            // Always display the summary in the outputArea
+            updateOutput(taskUI.outputArea, data.summary || "No summary available yet.");
           }
 
           switch (data.status) {
             case 'running':
               setTaskLogStyle(taskUI.taskLogEntry, 'running');
-              showStatus(taskUI.statusMessage, displayStatusMessage, false);
               break;
             case 'success':
               setTaskLogStyle(taskUI.taskLogEntry, 'success');
-              showStatus(taskUI.statusMessage, displayStatusMessage, false);
               clearInterval(taskUI.pollingIntervalId);
               delete activeTasks[taskId]; // Remove from active tasks
               enableForm(); // Re-enable form once this task is done
               break;
             case 'error':
               setTaskLogStyle(taskUI.taskLogEntry, 'error');
-              showStatus(taskUI.statusMessage, displayStatusMessage, true);
               clearInterval(taskUI.pollingIntervalId);
               delete activeTasks[taskId]; // Remove from active tasks
               enableForm(); // Re-enable form once this task is done
               break;
             default: // Fallback for unknown states
               setTaskLogStyle(taskUI.taskLogEntry, 'default');
-              showStatus(taskUI.statusMessage, "Unknown task status: " + data.status, true);
+              updateOutput(taskUI.outputArea, "Unknown task status: " + data.status);
               clearInterval(taskUI.pollingIntervalId);
               delete activeTasks[taskId]; // Remove from active tasks
               enableForm(); // Re-enable form once this task is done
@@ -360,7 +327,7 @@ const notebookHTML = `<!DOCTYPE html>
 
         } catch (error) {
           setTaskLogStyle(taskUI.taskLogEntry, 'error');
-          showStatus(taskUI.statusMessage, 'Summarization polling failed: ' + error.message, true);
+          updateOutput(taskUI.outputArea, 'Summarization polling failed: ' + error.message);
           clearInterval(taskUI.pollingIntervalId);
           delete activeTasks[taskId]; // Remove from active tasks
           enableForm(); // Re-enable form once this task is done
@@ -383,7 +350,7 @@ const notebookHTML = `<!DOCTYPE html>
         disableForm();
 
         const newUI = createTaskLogUI(prompt);
-        showStatus(newUI.statusMessage, "Starting task...");
+        updateOutput(newUI.outputArea, "Starting task...");
         setTaskLogStyle(newUI.taskLogEntry, 'running');
 
         let taskId;
@@ -400,7 +367,7 @@ const notebookHTML = `<!DOCTYPE html>
           taskId = data.taskId;
         } catch (error) {
           setTaskLogStyle(newUI.taskLogEntry, 'error');
-          showStatus(newUI.statusMessage, 'Error starting task: ' + error.message, true);
+          updateOutput(newUI.outputArea, 'Error starting task: ' + error.message);
           enableForm();
           // Remove both the prompt and task log entries if the task couldn't even start
           newUI.promptLogEntry.remove();
@@ -409,7 +376,7 @@ const notebookHTML = `<!DOCTYPE html>
         }
 
         if (!taskId) {
-          showStatus(newUI.statusMessage, 'Error: Did not receive a task ID from server.', true);
+          updateOutput(newUI.outputArea, 'Error: Did not receive a task ID from server.');
           enableForm();
           // Remove both entries if no task ID was received
           newUI.promptLogEntry.remove();
@@ -420,12 +387,11 @@ const notebookHTML = `<!DOCTYPE html>
         activeTasks[taskId] = {
           promptLogEntry: newUI.promptLogEntry,
           taskLogEntry: newUI.taskLogEntry,
-          statusMessage: newUI.statusMessage,
           outputArea: newUI.outputArea,
           pollingIntervalId: null,
         };
 
-        showStatus(newUI.statusMessage, "Task started, waiting for updates...");
+        updateOutput(newUI.outputArea, "Task started, waiting for updates...");
         pollTask(taskId);
         activeTasks[taskId].pollingIntervalId = setInterval(() => pollTask(taskId), 1000);
 
