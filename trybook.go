@@ -174,14 +174,9 @@ const notebookHTML = `<!DOCTYPE html>
 </head>
 <body>
   <div style="max-width: 60rem; margin: 0 auto; padding: 1rem; text-align: left;">
-    <h1>{{.NotebookName}}</h1>
-    <div style="margin-bottom: 1.5rem; padding: 0.5rem 1rem; background-color: #f8f8f8; border: 1px solid #eee; border-radius: 4px; font-size: 0.9rem;">
-      <p style="margin: 0.2rem 0;">Repository: <strong><a href="https://github.com/{{.Owner}}/{{.Repo}}">{{.RepoName}}</a></strong></p>
-      <p style="margin: 0.2rem 0;">Branch: <code>{{.BranchName}}</code></p>
-      <p style="margin: 0.2rem 0;">Worktree Path: <code>{{.WorktreePath}}</code></p>
-    </div>
+    <h1><a href="https://github.com/{{.Owner}}/{{.Repo}}">{{.RepoName}}</a> / {{.NotebookName}}</h1>
 
-    <form id="promptForm" method="POST" action="/api/run-prompt/{{.Owner}}/{{.Repo}}/{{.NotebookName}}" style="margin-top: 2rem;">
+    <form id="promptForm" method="POST" action="/api/run-prompt/{{.Owner}}/{{.Repo}}/{{.NotebookName}}" style="margin-top: 1rem;">
       <div style="display: flex; gap: 0.5rem;">
         <input type="text" id="promptInput" name="prompt" placeholder="question? or tell me to do something" style="flex-grow: 1; font-size: 1.25rem; padding: 0.6rem 0.75rem; box-sizing: border-box;">
         <button type="submit" style="font-size: 1.1rem; padding: 0.6rem 1rem;">run</button>
