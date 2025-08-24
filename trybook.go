@@ -224,7 +224,7 @@ const notebookHTML = `<!DOCTYPE html>
       const taskLogTemplate = document.getElementById('taskLogTemplate');
 
       let isSubmitting = false; // Flag to prevent multiple submissions
-      // taskId -> {promptLogEntry, taskLogEntry, statusMessage, outputArea, pollingIntervalId}
+      // taskId -> {promptLogEntry, taskLogEntry, outputArea, toggleButton, rawOutputArea, pollingIntervalId}
       const activeTasks = {}; 
 
       function createTaskLogUI(promptText) {
