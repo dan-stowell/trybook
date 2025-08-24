@@ -592,7 +592,15 @@ func runGeminiSummary(ctx context.Context, textToSummarize string) (string, erro
 	log.Printf("Running llm for summary of text length %d", len(textToSummarize))
 
 	// Define the command to use 'llm' with 'gpt-5-nano' model and a summarization system prompt.
-	cmd := exec.CommandContext(ctx, "llm", "--model", "gpt-5-nano", "-s", "Please summarize this answer in a single sentence.")
+	systemPrompt := `
+		This is the output from a coding agent.
+		Can you summarize the output in a single sentence?
+		The agent may still be thinking or reading files, in which case you can summarize what the agent has thought or done so far.
+		The agent may have provided a partial or complete answer to a question, in which case you should summarize that answer and ignore the thinking and tool use.
+		Agents may print diagnostic information such as 'Data collection disabled.' Please ignore diagnostic information in your summary.
+		If there is nothing worth summarizing, please responding 'Running...' or some other pithy response.
+	`
+	cmd := exec.CommandContext(ctx, "llm", "--model", "gpt-5-nano", "-s", systemPrompt)
 
 	// Set up stdin for the llm command to pass the textToSummarize
 	cmd.Stdin = strings.NewReader(textToSummarize)
