@@ -309,8 +309,11 @@ const notebookHTML = `<!DOCTYPE html>
 
             const hasSummary = data.summary && data.summary !== "No output available yet.";
 
-            if (data.status === 'running' && hasSummary) {
-                displayStatusMessage = "Running... " + data.summary;
+            if (data.status === 'running') {
+                displayStatusMessage = "Running...";
+                if (hasSummary) {
+                    displayStatusMessage += " " + data.summary;
+                }
             } else {
                 displayStatusMessage = data.statusMessage;
                 if (hasSummary) {
