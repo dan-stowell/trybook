@@ -175,23 +175,37 @@ const notebookHTML = `<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>trybook - {{.NotebookName}}</title>
+<style>
+  html, body { margin: 0; padding: 0; }
+  body { display: flex; flex-direction: column; min-height: 100vh; }
+  .content-wrapper { flex-grow: 1; padding: 1rem; text-align: left; }
+  #promptForm { padding: 1rem; background-color: #f0f0f0; border-top: 1px solid #ccc; }
+  /* Ensure no extra margins push content away */
+  #taskLog { margin-top: 1rem; padding: 0.5rem 1rem; border: 1px solid #ddd; border-radius: 4px; background-color: #fcfcfc; text-align: left; display: none; }
+</style>
 </head>
-<body style="padding: 1rem; text-align: left;">
-  <div>
+<body>
+  <div class="content-wrapper">
     <h1><a href="https://github.com/{{.Owner}}/{{.Repo}}">{{.RepoName}}</a> / {{.NotebookName}}</h1>
-
-    <form id="promptForm" method="POST" action="/api/run-prompt/{{.Owner}}/{{.Repo}}/{{.NotebookName}}" style="margin-top: 1rem;">
-      <div style="display: flex; gap: 0.5rem;">
-        <input type="text" id="promptInput" name="prompt" placeholder="question? or tell me to do something" style="flex-grow: 1; font-size: 1.25rem; padding: 0.6rem 0.75rem; box-sizing: border-box;">
-        <button type="submit" style="font-size: 1.1rem; padding: 0.6rem 1rem;">run</button>
-      </div>
-    </form>
 
     <div id="taskLog" style="margin-top: 1rem; padding: 0.5rem 1rem; border: 1px solid #ddd; border-radius: 4px; background-color: #fcfcfc; text-align: left; display: none;">
       <div id="loggedPrompt" style="margin-bottom: 0.75rem; font-style: italic; color: #666; word-wrap: break-word; display: none;"></div>
       <div id="statusMessage" style="margin-bottom: 0.5rem; color: #555;"></div>
       <pre id="outputArea" style="white-space: pre-wrap; font-family: monospace; text-align: left; margin: 0;"></pre>
     </div>
+
+    {{if .Error}}
+    <p style="color: #b00020; font-size: 0.95rem; margin-top: 1rem; white-space: pre-wrap;">Error: {{.Error}}</p>
+    {{end}}
+    <p style="margin-top: 2rem;"><a href="/repo/{{.Owner}}/{{.Repo}}">Back to repository</a> | <a href="/">Back to search</a></p>
+  </div>
+
+  <form id="promptForm" method="POST" action="/api/run-prompt/{{.Owner}}/{{.Repo}}/{{.NotebookName}}">
+      <div style="display: flex; gap: 0.5rem;">
+        <input type="text" id="promptInput" name="prompt" placeholder="question? or tell me to do something" style="flex-grow: 1; font-size: 1.25rem; padding: 0.6rem 0.75rem; box-sizing: border-box;">
+        <button type="submit" style="font-size: 1.1rem; padding: 0.6rem 1rem;">run</button>
+      </div>
+    </form>
 
     <script>
     (function() {
@@ -386,12 +400,6 @@ const notebookHTML = `<!DOCTYPE html>
       clearOutput();
     })();
     </script>
-
-    {{if .Error}}
-    <p style="color: #b00020; font-size: 0.95rem; margin-top: 1rem; white-space: pre-wrap;">Error: {{.Error}}</p>
-    {{end}}
-    <p style="margin-top: 2rem;"><a href="/repo/{{.Owner}}/{{.Repo}}">Back to repository</a> | <a href="/">Back to search</a></p>
-  </div>
 </body>
 </html>
 `
