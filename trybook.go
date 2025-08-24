@@ -132,7 +132,7 @@ const repoHTML = `<!DOCTYPE html>
 <body style="padding: 1rem; text-align: left;">
   <div>
     <h1>trybook</h1>
-    <p>Repository: <strong><a href="https://github.com/{{.Owner}}/{{.Repo}}">{{.RepoName}}</a></strong></p>
+    <p>Repository: <strong><a href="https://github.com/{{.Owner}}/{{.Repo}}" style="color: #007bff;">{{.RepoName}}</a></strong></p>
     <p>Cloned Commit: <code>{{.CommitHash}}</code></p>
 
     <form method="POST" action="/create-notebook/{{.Owner}}/{{.Repo}}" style="margin-top: 2rem;">
