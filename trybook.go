@@ -45,22 +45,24 @@ const indexHTML = `<!DOCTYPE html>
   .sugg-desc { color: #555; font-size: 0.9rem; }
 </style>
 </head>
-<body style="text-align:center;">
-  <h1>trybook</h1>
-  <form method="GET" action="/">
-    <div style="display: flex; max-width: 40rem; margin: 0 auto; gap: 0.5rem;">
-      <input type="url" id="repoUrl" name="repo" placeholder="github repo" value="{{.Query}}" autofocus style="flex-grow: 1; font-size: 1.25rem; padding: 0.6rem 0.75rem;">
-      <button type="submit" style="font-size: 1.1rem; padding: 0.6rem 1rem;">Open</button>
-    </div>
-  </form>
-  <div id="suggestions"></div>
+<body style="padding: 1rem; text-align: left;">
+  <div style="max-width: 50vw; margin: 0 auto;">
+    <h1>trybook</h1>
+    <form method="GET" action="/">
+      <div style="display: flex; max-width: 100%; margin: 0 auto; gap: 0.5rem;">
+        <input type="url" id="repoUrl" name="repo" placeholder="github repo" value="{{.Query}}" autofocus style="flex-grow: 1; font-size: 1.25rem; padding: 0.6rem 0.75rem;">
+        <button type="submit" style="font-size: 1.1rem; padding: 0.6rem 1rem;">Open</button>
+      </div>
+    </form>
+    <div id="suggestions" style="max-width: 100%; margin: 0.5rem auto 0; text-align: left;"></div>
 
-  {{if .Error}}
-  <p style="color: #b00020; font-size: 0.95rem; margin-top: 1rem; white-space: pre-wrap;">Error: {{.Error}}</p>
-  {{end}}
-  {{if .Result}}
-  <p style="color: #0a7; font-size: 0.95rem; margin-top: 1rem; white-space: pre-wrap;">{{.Result}}</p>
-  {{end}}
+    {{if .Error}}
+    <p style="color: #b00020; font-size: 0.95rem; margin-top: 1rem; white-space: pre-wrap;">Error: {{.Error}}</p>
+    {{end}}
+    {{if .Result}}
+    <p style="color: #0a7; font-size: 0.95rem; margin-top: 1rem; white-space: pre-wrap;">{{.Result}}</p>
+    {{end}}
+  </div>
 <script>
 (function(){
   const input = document.getElementById('repoUrl');
@@ -127,19 +129,21 @@ const repoHTML = `<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>trybook - {{.RepoName}}</title>
 </head>
-<body style="text-align:center;">
-  <h1>trybook</h1>
-  <p>Repository: <strong><a href="https://github.com/{{.Owner}}/{{.Repo}}">{{.RepoName}}</a></strong></p>
-  <p>Cloned Commit: <code>{{.CommitHash}}</code></p>
+<body style="padding: 1rem; text-align: left;">
+  <div style="max-width: 50vw; margin: 0 auto;">
+    <h1>trybook</h1>
+    <p>Repository: <strong><a href="https://github.com/{{.Owner}}/{{.Repo}}">{{.RepoName}}</a></strong></p>
+    <p>Cloned Commit: <code>{{.CommitHash}}</code></p>
 
-  <form method="POST" action="/create-notebook/{{.Owner}}/{{.Repo}}" style="margin-top: 2rem;">
-    <button type="submit" style="font-size: 1.1rem; padding: 0.6rem 1rem;">Create Notebook</button>
-  </form>
+    <form method="POST" action="/create-notebook/{{.Owner}}/{{.Repo}}" style="margin-top: 2rem;">
+      <button type="submit" style="font-size: 1.1rem; padding: 0.6rem 1rem;">Create Notebook</button>
+    </form>
 
-  {{if .Error}}
-  <p style="color: #b00020; font-size: 0.95rem; margin-top: 1rem; white-space: pre-wrap;">Error: {{.Error}}</p>
-  {{end}}
-  <p style="margin-top: 2rem;"><a href="/">Back to search</a></p>
+    {{if .Error}}
+    <p style="color: #b00020; font-size: 0.95rem; margin-top: 1rem; white-space: pre-wrap;">Error: {{.Error}}</p>
+    {{end}}
+    <p style="margin-top: 2rem;"><a href="/">Back to search</a></p>
+  </div>
 </body>
 </html>
 `
@@ -172,8 +176,8 @@ const notebookHTML = `<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>trybook - {{.NotebookName}}</title>
 </head>
-<body>
-  <div style="max-width: 60rem; margin: 0 auto; padding: 1rem; text-align: left;">
+<body style="padding: 1rem; text-align: left;">
+  <div style="max-width: 50vw; margin: 0 auto;">
     <h1><a href="https://github.com/{{.Owner}}/{{.Repo}}">{{.RepoName}}</a> / {{.NotebookName}}</h1>
 
     <form id="promptForm" method="POST" action="/api/run-prompt/{{.Owner}}/{{.Repo}}/{{.NotebookName}}" style="margin-top: 1rem;">
