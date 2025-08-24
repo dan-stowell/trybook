@@ -204,7 +204,6 @@ const notebookHTML = `<!DOCTYPE html>
     {{if .Error}}
     <p style="color: #b00020; font-size: 0.95rem; margin-top: 1rem; white-space: pre-wrap;">Error: {{.Error}}</p>
     {{end}}
-    <p style="margin-top: 2rem;"><a href="/repo/{{.Owner}}/{{.Repo}}">Back to repository</a> | <a href="/">Back to search</a></p>
   </div>
 
   <form id="promptForm" method="POST" action="/api/run-prompt/{{.Owner}}/{{.Repo}}/{{.NotebookName}}">
