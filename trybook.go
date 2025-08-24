@@ -186,7 +186,7 @@ const notebookHTML = `<!DOCTYPE html>
 </head>
 <body>
   <div class="content-wrapper">
-    <h1><a href="https://github.com/{{.Owner}}/{{.Repo}}">{{.RepoName}}</a> / {{.NotebookName}}</h1>
+    <h1><a href="https://github.com/{{.Owner}}/{{.Repo}}" style="color: #007bff;">{{.RepoName}}</a> / {{.NotebookName}}</h1>
 
     <div id="taskLogContainer"></div>
 
