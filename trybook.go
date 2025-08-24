@@ -197,6 +197,10 @@ const notebookHTML = `<!DOCTYPE html>
     <template id="taskLogTemplate">
       <div class="task-log-entry" style="margin-top: 1rem; padding: 0.5rem 1rem; border: 1px solid #ddd; border-radius: 4px; background-color: #fcfcfc; text-align: left;">
         <pre class="output-area" style="white-space: pre-wrap; font-family: monospace; text-align: left; margin: 0;"></pre>
+        <div style="margin-top: 0.5rem; text-align: right;">
+          <button class="toggle-raw-output" style="font-size: 0.8rem; padding: 0.2rem 0.5rem; display: none;">Show Raw Output</button>
+        </div>
+        <pre class="raw-output-area" style="white-space: pre-wrap; font-family: monospace; text-align: left; margin: 0; background-color: #eee; padding: 0.5rem; border-radius: 4px; display: none; max-height: 200px; overflow-y: auto;"></pre>
       </div>
     </template>
 
@@ -234,13 +238,19 @@ const notebookHTML = `<!DOCTYPE html>
         const taskClone = document.importNode(taskLogTemplate.content, true);
         const taskLogEntry = taskClone.querySelector('.task-log-entry');
         const outputArea = taskLogEntry.querySelector('.output-area');
+        const toggleButton = taskLogEntry.querySelector('.toggle-raw-output');
+        const rawOutputArea = taskLogEntry.querySelector('.raw-output-area');
         taskLogContainer.append(taskLogEntry); // Append task box after prompt box
 
-        return { promptLogEntry, taskLogEntry, outputArea };
+        return { promptLogEntry, taskLogEntry, outputArea, toggleButton, rawOutputArea };
       }
 
       function updateOutput(outputAreaElement, output) {
         outputAreaElement.textContent = output;
+      }
+
+      function updateRawOutput(rawOutputAreaElement, output) {
+        rawOutputAreaElement.textContent = output;
       }
 
       function setTaskLogStyle(taskLogElement, statusType) {
@@ -293,11 +303,18 @@ const notebookHTML = `<!DOCTYPE html>
           const response = await fetch('/api/summarize-task/' + taskId);
           const data = await response.json();
 
+          updateRawOutput(taskUI.rawOutputArea, data.output || "");
+
+          if (data.output && data.output.trim() !== "") {
+            taskUI.toggleButton.style.display = 'inline-block';
+          } else {
+            taskUI.toggleButton.style.display = 'none';
+          }
+
           if (!response.ok) {
             console.error('Failed to fetch task summary:', data.error || 'Unknown error');
             updateOutput(taskUI.outputArea, 'Error fetching summary: ' + (data.error || 'Unknown error'));
           } else {
-            // Always display the summary in the outputArea
             updateOutput(taskUI.outputArea, data.summary || "No summary available yet.");
           }
 
@@ -351,7 +368,21 @@ const notebookHTML = `<!DOCTYPE html>
 
         const newUI = createTaskLogUI(prompt);
         updateOutput(newUI.outputArea, "Starting task...");
+        updateRawOutput(newUI.rawOutputArea, "No raw output yet."); // Initialize raw output
+        newUI.toggleButton.style.display = 'none'; // Initially hide toggle button
+        newUI.rawOutputArea.style.display = 'none'; // Initially hide raw output area
         setTaskLogStyle(newUI.taskLogEntry, 'running');
+
+        // Add event listener for the new toggle button
+        newUI.toggleButton.addEventListener('click', function() {
+          if (newUI.rawOutputArea.style.display === 'none') {
+            newUI.rawOutputArea.style.display = 'block';
+            newUI.toggleButton.textContent = 'Hide Raw Output';
+          } else {
+            newUI.rawOutputArea.style.display = 'none';
+            newUI.toggleButton.textContent = 'Show Raw Output';
+          }
+        });
 
         let taskId;
         try {
@@ -388,6 +419,8 @@ const notebookHTML = `<!DOCTYPE html>
           promptLogEntry: newUI.promptLogEntry,
           taskLogEntry: newUI.taskLogEntry,
           outputArea: newUI.outputArea,
+          toggleButton: newUI.toggleButton,
+          rawOutputArea: newUI.rawOutputArea,
           pollingIntervalId: null,
         };
 
