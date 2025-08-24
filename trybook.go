@@ -177,7 +177,7 @@ const notebookHTML = `<!DOCTYPE html>
 <title>trybook - {{.NotebookName}}</title>
 </head>
 <body style="padding: 1rem; text-align: left;">
-  <div style="max-width: 50vw; margin: 0 auto;">
+  <div>
     <h1><a href="https://github.com/{{.Owner}}/{{.Repo}}">{{.RepoName}}</a> / {{.NotebookName}}</h1>
 
     <form id="promptForm" method="POST" action="/api/run-prompt/{{.Owner}}/{{.Repo}}/{{.NotebookName}}" style="margin-top: 1rem;">
