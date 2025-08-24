@@ -46,15 +46,15 @@ const indexHTML = `<!DOCTYPE html>
 </style>
 </head>
 <body style="padding: 1rem; text-align: left;">
-  <div style="max-width: 50vw; margin: 0 auto;">
+  <div>
     <h1>trybook</h1>
     <form method="GET" action="/">
-      <div style="display: flex; max-width: 100%; margin: 0 auto; gap: 0.5rem;">
+      <div style="display: flex; gap: 0.5rem;">
         <input type="url" id="repoUrl" name="repo" placeholder="github repo" value="{{.Query}}" autofocus style="flex-grow: 1; font-size: 1.25rem; padding: 0.6rem 0.75rem;">
         <button type="submit" style="font-size: 1.1rem; padding: 0.6rem 1rem;">Open</button>
       </div>
     </form>
-    <div id="suggestions" style="max-width: 100%; margin: 0.5rem auto 0; text-align: left;"></div>
+    <div id="suggestions" style="margin-top: 0.5rem; text-align: left;"></div>
 
     {{if .Error}}
     <p style="color: #b00020; font-size: 0.95rem; margin-top: 1rem; white-space: pre-wrap;">Error: {{.Error}}</p>
@@ -130,7 +130,7 @@ const repoHTML = `<!DOCTYPE html>
 <title>trybook - {{.RepoName}}</title>
 </head>
 <body style="padding: 1rem; text-align: left;">
-  <div style="max-width: 50vw; margin: 0 auto;">
+  <div>
     <h1>trybook</h1>
     <p>Repository: <strong><a href="https://github.com/{{.Owner}}/{{.Repo}}">{{.RepoName}}</a></strong></p>
     <p>Cloned Commit: <code>{{.CommitHash}}</code></p>
