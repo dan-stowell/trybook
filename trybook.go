@@ -231,7 +231,7 @@ const notebookHTML = `<!DOCTYPE html>
         loggedPrompt.textContent = 'Prompt: "' + promptText + '"';
         loggedPrompt.style.display = 'block';
 
-        taskLogContainer.prepend(taskLogEntry); // Add new entry to the top
+        taskLogContainer.append(taskLogEntry); // Add new entry to the bottom
 
         return { taskLogEntry, loggedPrompt, statusMessage, outputArea };
       }
