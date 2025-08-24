@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio" // Added for streaming command output
 	"context"
 	"encoding/json"
 	"flag"
@@ -8,13 +9,12 @@ import (
 	"html/template"
 	"io"
 	"log"
+	"math/rand"
 	"net/http"
 	"os"
-	"os/user"
-	"bufio" // Added for streaming command output
 	"os/exec"
 	"os/signal"
-	"math/rand"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"sync" // Already present
@@ -479,10 +479,10 @@ const notebookHTML = `<!DOCTYPE html>
 `
 
 var (
-	indexTmpl   = template.Must(template.New("index").Parse(indexHTML))
-	repoTmpl    = template.Must(template.New("repo").Parse(repoHTML))
+	indexTmpl    = template.Must(template.New("index").Parse(indexHTML))
+	repoTmpl     = template.Must(template.New("repo").Parse(repoHTML))
 	notebookTmpl = template.Must(template.New("notebook").Parse(notebookHTML))
-	workDir     string
+	workDir      string
 )
 
 type IndexData struct {
@@ -524,11 +524,11 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", indexHandler)
 	mux.HandleFunc("/api/search", apiSearchHandler)
-	mux.HandleFunc("/repo/", repoHandler)                 // Handle /repo/{owner}/{repo}
-	mux.HandleFunc("/create-notebook/", createNotebookHandler) // POST /create-notebook/{owner}/{repo}
-	mux.HandleFunc("/notebook/", notebookHandler)         // GET /notebook/{owner}/{repo}/{notebook_name}
-	mux.HandleFunc("/api/run-prompt/", apiRunPromptHandler) // POST /api/run-prompt/{owner}/{repo}/{notebook_name}
-	mux.HandleFunc("/api/poll-task/", apiPollTaskHandler)   // GET /api/poll-task/{task_id}
+	mux.HandleFunc("/repo/", repoHandler)                           // Handle /repo/{owner}/{repo}
+	mux.HandleFunc("/create-notebook/", createNotebookHandler)      // POST /create-notebook/{owner}/{repo}
+	mux.HandleFunc("/notebook/", notebookHandler)                   // GET /notebook/{owner}/{repo}/{notebook_name}
+	mux.HandleFunc("/api/run-prompt/", apiRunPromptHandler)         // POST /api/run-prompt/{owner}/{repo}/{notebook_name}
+	mux.HandleFunc("/api/poll-task/", apiPollTaskHandler)           // GET /api/poll-task/{task_id}
 	mux.HandleFunc("/api/summarize-task/", apiSummarizeTaskHandler) // GET /api/summarize-task/{task_id}
 
 	addr := "127.0.0.1:8080"
@@ -631,7 +631,6 @@ func runLLMSummary(ctx context.Context, textToSummarize string) (string, error) 
 	}
 	return strings.TrimSpace(string(out)), nil
 }
-
 
 // runLLMCommand executes a single LLM command (gemini or claude) and updates the provided LLMResponse.
 func runLLMCommand(llmResponse *LLMResponse, worktreePath, llmName, prompt string) {
@@ -883,7 +882,6 @@ func buildLLMResponseData(llmResp *LLMResponse, ctx context.Context) map[string]
 	return data
 }
 
-
 // apiPollTaskHandler returns the current status and output of a task.
 // This handler is less detailed than apiSummarizeTaskHandler and primarily shows Gemini's state.
 func apiPollTaskHandler(w http.ResponseWriter, r *http.Request) {
@@ -967,15 +965,14 @@ func apiSummarizeTaskHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Construct the full response for the client
 	resp := map[string]interface{}{
-		"taskId": promptExecutionID,
+		"taskId":        promptExecutionID,
 		"overallStatus": overallStatus, // Can be "running", "success", "error" based on both LLMs
-		"gemini": geminiResp,
-		"claude": claudeResp,
+		"gemini":        geminiResp,
+		"claude":        claudeResp,
 	}
 
 	json.NewEncoder(w).Encode(resp)
 }
-
 
 // getHeadCommit returns the SHA of the HEAD commit in the given repo directory.
 func getHeadCommit(ctx context.Context, repoDir string) (string, error) {
@@ -1218,11 +1215,10 @@ func parseGitHubInput(s string) (string, string, error) {
 	return owner, repo, nil
 }
 
-
 type Repo struct {
-	FullName       string `json:"fullName"`
-	Description    string `json:"description"`
-	URL            string `json:"url"`
+	FullName        string `json:"fullName"`
+	Description     string `json:"description"`
+	URL             string `json:"url"`
 	StargazersCount int    `json:"stargazersCount"`
 }
 
@@ -1287,4 +1283,3 @@ func logRequest(next http.Handler) http.Handler {
 		log.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(start))
 	})
 }
-
