@@ -304,17 +304,26 @@ const notebookHTML = `<!DOCTYPE html>
           if (!response.ok) {
             console.error('Failed to fetch task summary:', data.error || 'Unknown error');
             displayStatusMessage = 'Could not fetch summary: ' + (data.error || 'Unknown error');
+            taskUI.outputArea.style.display = 'none'; // Hide output area on error fetching summary
+            taskUI.outputArea.textContent = ''; // Clear raw output content
           } else {
-            updateOutput(taskUI.outputArea, data.output);
-
             const hasSummary = data.summary && data.summary !== "No output available yet.";
+            const isTaskDone = data.status !== 'running';
+
+            if (!hasSummary && !isTaskDone) { // Only show raw output if running and no meaningful summary yet
+              updateOutput(taskUI.outputArea, data.output);
+              taskUI.outputArea.style.display = 'block';
+            } else {
+              taskUI.outputArea.style.display = 'none'; // Hide raw output
+              taskUI.outputArea.textContent = ''; // Clear raw output
+            }
 
             if (data.status === 'running') {
                 displayStatusMessage = "Running...";
                 if (hasSummary) {
                     displayStatusMessage += " " + data.summary;
                 }
-            } else {
+            } else { // 'success' or 'error'
                 displayStatusMessage = data.statusMessage;
                 if (hasSummary) {
                     displayStatusMessage += " " + data.summary;
