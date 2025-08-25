@@ -1406,13 +1406,60 @@ func createNotebookHandler(w http.ResponseWriter, r *http.Request) {
 	repo := parts[3]
 	repoFullName := owner + "/" + repo
 
-	// First, ensure the base repository is cloned/pulled
-	baseRepoDir, _, err := manageRepo(r.Context(), repoFullName)
-	if err != nil {
-		log.Printf("Error ensuring base repo for notebook creation %s: %v", repoFullName, err)
-		http.Error(w, fmt.Sprintf("Error preparing base repository: %v", err), http.StatusInternalServerError)
-		return
+	// First, initiate the repo operation to ensure the base repository is cloned/pulled
+	// This needs to be synchronous here, so we create a RepoOperation, start manageRepo in a goroutine, and wait.
+	op := &RepoOperation{
+		RepoName: repoFullName,
 	}
+
+	// Add to global map just in case, though not strictly needed for this synchronous wait pattern
+	// since we won't be polling it via API.
+	// We do not generate an ID here as it's not exposed via API for polling.
+
+	// Start the git operation in a goroutine
+	go manageRepo(r.Context(), op)
+
+	// Wait for the repo operation to complete
+	// We will poll its internal 'Done' status.
+	// Add a timeout to prevent indefinite blocking in case of issues.
+	waitCtx, waitCancel := context.WithTimeout(r.Context(), 180*time.Second) // Longer timeout than git op itself
+	defer waitCancel()
+
+	ticker := time.NewTicker(200 * time.Millisecond) // Poll every 200ms
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-waitCtx.Done():
+			log.Printf("Timeout waiting for repo operation for %s: %v", repoFullName, waitCtx.Err())
+			http.Error(w, fmt.Sprintf("Timeout preparing base repository: %v", waitCtx.Err()), http.StatusRequestTimeout)
+			return
+		case <-ticker.C:
+			op.mu.RLock()
+			done := op.Done
+			opErr := op.Err
+			opStatus := op.Status
+			op.mu.RUnlock()
+
+			if done {
+				if opErr != nil {
+					log.Printf("Error ensuring base repo for notebook creation %s: %v\nOutput:\n%s", repoFullName, opErr, op.Output)
+					http.Error(w, fmt.Sprintf("Error preparing base repository: %v\nOutput:\n%s", opErr, op.Output), http.StatusInternalServerError)
+					return
+				}
+				if opStatus != "success" {
+					log.Printf("Repo operation for %s failed with status %q (no explicit error)", repoFullName, opStatus)
+					http.Error(w, fmt.Sprintf("Failed to prepare base repository (status: %q)\nOutput:\n%s", opStatus, op.Output), http.StatusInternalServerError)
+					return
+				}
+				break // Operation completed successfully
+			}
+		}
+		if op.Done {
+			break
+		}
+	}
+	baseRepoDir := op.RepoDir // Get the final directory from the completed operation
 
 	notebookName := generateNotebookName(repoFullName)
 	branchName := notebookName // Use notebook name as branch name
