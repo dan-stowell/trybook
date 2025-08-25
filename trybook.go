@@ -205,8 +205,7 @@ const notebookHTML = `<!DOCTYPE html>
     <template id="llmResponseTemplate">
       <div class="llm-response-entry" style="margin-top: 1rem; padding: 0.5rem 1rem; border: 1px solid #ddd; border-radius: 4px; background-color: #fcfcfc; text-align: left; position: relative;">
         <div style="font-weight: bold; margin-bottom: 0.5rem;" class="llm-title"></div>
-        <span class="toggle-raw-output" style="position: absolute; left: 0.5rem; top: 0.7rem; cursor: pointer; font-size: 0.8em; color: #666; transition: transform 0.2s; user-select: none; display: none;">▶</span>
-        <pre class="output-area" style="white-space: pre-wrap; font-family: monospace; text-align: left; margin: 0; padding-left: 1.2em;"></pre>
+        <pre class="output-area" style="white-space: pre-wrap; font-family: monospace; text-align: left; margin: 0; padding-left: 0em;"></pre>
         <pre class="raw-output-area" style="white-space: pre-wrap; font-family: monospace; text-align: left; margin: 0; background-color: #eee; padding: 0.5rem; border-radius: 4px; display: none; max-height: 200px; overflow-y: auto;"></pre>
       </div>
     </template>
@@ -239,12 +238,11 @@ const notebookHTML = `<!DOCTYPE html>
         const llmClone = document.importNode(llmResponseTemplate.content, true);
         const llmResponseEntry = llmClone.querySelector('.llm-response-entry');
         llmResponseEntry.querySelector('.llm-title').textContent = llmName;
-        const toggleButton = llmResponseEntry.querySelector('.toggle-raw-output');
         const outputArea = llmResponseEntry.querySelector('.output-area');
         const rawOutputArea = llmResponseEntry.querySelector('.raw-output-area');
         taskLogContainer.append(llmResponseEntry);
 
-        return { llmResponseEntry, outputArea, toggleButton, rawOutputArea };
+        return { llmResponseEntry, outputArea, rawOutputArea };
       }
 
       function createTaskLogUI(promptText) {
@@ -328,22 +326,12 @@ const notebookHTML = `<!DOCTYPE html>
             // Update Gemini UI
             const geminiData = data.gemini;
             updateRawOutput(promptExecUI.geminiUI.rawOutputArea, geminiData.output || "");
-            if (geminiData.output && geminiData.output.trim() !== "") {
-              promptExecUI.geminiUI.toggleButton.style.display = 'inline-block';
-            } else {
-              promptExecUI.geminiUI.toggleButton.style.display = 'none';
-            }
             updateOutput(promptExecUI.geminiUI.outputArea, geminiData.summary || "No summary available yet.");
             setLLMResponseStyle(promptExecUI.geminiUI.llmResponseEntry, geminiData.status);
 
             // Update Claude UI
             const claudeData = data.claude;
             updateRawOutput(promptExecUI.claudeUI.rawOutputArea, claudeData.output || "");
-            if (claudeData.output && claudeData.output.trim() !== "") {
-              promptExecUI.claudeUI.toggleButton.style.display = 'inline-block';
-            } else {
-              promptExecUI.claudeUI.toggleButton.style.display = 'none';
-            }
             updateOutput(promptExecUI.claudeUI.outputArea, claudeData.summary || "No summary available yet.");
             setLLMResponseStyle(promptExecUI.claudeUI.llmResponseEntry, claudeData.status);
 
@@ -385,35 +373,28 @@ const notebookHTML = `<!DOCTYPE html>
         // Initialize Gemini UI
         updateOutput(newUI.geminiUI.outputArea, "Starting Gemini task...");
         updateRawOutput(newUI.geminiUI.rawOutputArea, "No raw output yet.");
-        newUI.geminiUI.toggleButton.style.display = 'none';
-        newUI.geminiUI.toggleButton.style.transform = 'rotate(0deg)';
-        newUI.geminiUI.rawOutputArea.style.display = 'none';
+        newUI.geminiUI.rawOutputArea.style.display = 'none'; // Ensure raw output is hidden initially
         setLLMResponseStyle(newUI.geminiUI.llmResponseEntry, 'running');
 
         // Initialize Claude UI
         updateOutput(newUI.claudeUI.outputArea, "Starting Claude task...");
         updateRawOutput(newUI.claudeUI.rawOutputArea, "No raw output yet.");
-        newUI.claudeUI.toggleButton.style.display = 'none';
-        newUI.claudeUI.toggleButton.style.transform = 'rotate(0deg)';
-        newUI.claudeUI.rawOutputArea.style.display = 'none';
+        newUI.claudeUI.rawOutputArea.style.display = 'none'; // Ensure raw output is hidden initially
         setLLMResponseStyle(newUI.claudeUI.llmResponseEntry, 'running');
 
-        // Add event listeners for the toggle buttons
-        function addToggleButtonListener(uiElement) {
-            uiElement.toggleButton.addEventListener('click', function() {
+        // Add event listeners to toggle raw output on click for the entire LLM response box
+        function addToggleClickListener(uiElement) {
+            uiElement.llmResponseEntry.style.cursor = 'pointer'; // Indicate it's clickable
+            uiElement.llmResponseEntry.addEventListener('click', function() {
                 if (uiElement.rawOutputArea.style.display === 'none') {
                     uiElement.rawOutputArea.style.display = 'block';
-                    uiElement.toggleButton.style.transform = 'rotate(90deg)';
-                    uiElement.toggleButton.style.color = '#333';
                 } else {
                     uiElement.rawOutputArea.style.display = 'none';
-                    uiElement.toggleButton.style.transform = 'rotate(0deg)';
-                    uiElement.toggleButton.style.color = '#666';
                 }
             });
         }
-        addToggleButtonListener(newUI.geminiUI);
-        addToggleButtonListener(newUI.claudeUI);
+        addToggleClickListener(newUI.geminiUI);
+        addToggleClickListener(newUI.claudeUI);
 
         let taskId;
         try {
