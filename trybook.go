@@ -1163,63 +1163,161 @@ func getHeadCommit(ctx context.Context, repoDir string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-func manageRepo(ctx context.Context, input string) (string, string, error) { // Added string for commit hash
-	owner, repo, err := parseGitHubInput(input)
+func manageRepo(ctx context.Context, op *RepoOperation) {
+	op.mu.Lock()
+	op.Status = "running"
+	op.Output = ""
+	op.Err = nil
+	op.Done = false
+	op.CommitHash = ""
+	op.mu.Unlock()
+
+	owner, repo, err := parseGitHubInput(op.RepoName)
 	if err != nil {
-		return "", "", err
+		op.mu.Lock()
+		op.Err = fmt.Errorf("invalid repository name: %w", err)
+		op.Status = "error"
+		op.Done = true
+		op.mu.Unlock()
+		log.Printf("Failed to parse repo name %q: %v", op.RepoName, err)
+		return
 	}
 
 	repoDir := filepath.Join(workDir, "clone", owner, repo)
 	sshURL := "ssh://git@github.com/" + owner + "/" + repo
 
 	// Timeout the git operation to avoid hanging connections.
-	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	opCtx, cancel := context.WithTimeout(ctx, 120*time.Second) // Increased timeout for potentially slow clones
 	defer cancel()
 
 	var cmd *exec.Cmd
-	var operation string
-	var opStart time.Time
+	var operationDesc string
 
 	_, err = os.Stat(repoDir)
 	if err == nil { // Directory exists, perform pull
-		operation = "git pull"
+		operationDesc = "git pull"
 		log.Printf("Starting git pull for %s in %s", sshURL, repoDir)
-		opStart = time.Now()
-		cmd = exec.CommandContext(ctx, "git", "pull")
+		cmd = exec.CommandContext(opCtx, "git", "pull", "--progress")
 		cmd.Dir = repoDir // Set working directory for pull
 	} else if os.IsNotExist(err) { // Directory does not exist, perform clone
-		operation = "git clone"
+		operationDesc = "git clone"
 		log.Printf("Starting git clone of %s into %s", sshURL, repoDir)
-		opStart = time.Now()
 		if err := os.MkdirAll(repoDir, 0o755); err != nil {
-			return "", "", fmt.Errorf("create repo directory %q: %w", repoDir, err)
+			op.mu.Lock()
+			op.Err = fmt.Errorf("create repo directory %q: %w", repoDir, err)
+			op.Status = "error"
+			op.Done = true
+			op.mu.Unlock()
+			return
 		}
-		cmd = exec.CommandContext(ctx, "git", "clone", "--depth=1", "--single-branch", sshURL, repoDir)
+		cmd = exec.CommandContext(opCtx, "git", "clone", "--depth=1", "--single-branch", "--progress", sshURL, repoDir)
 	} else {
-		return "", "", fmt.Errorf("stat %q: %w", repoDir, err)
+		op.mu.Lock()
+		op.Err = fmt.Errorf("stat %q: %w", repoDir, err)
+		op.Status = "error"
+		op.Done = true
+		op.mu.Unlock()
+		return
 	}
 
 	// Avoid interactive prompts in server context.
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		log.Printf("Failed %s for %s after %s: %v\n%s", operation, sshURL, time.Since(opStart), err, string(out))
-		return "", "", fmt.Errorf("%s failed: %v\n%s", operation, err, string(out))
-	}
-	log.Printf("Completed %s for %s in %s", operation, sshURL, time.Since(opStart))
 
-	// Get the HEAD commit hash after successful operation
-	commitHash, err := getHeadCommit(ctx, repoDir)
+	// Capture both stdout and stderr (progress goes to stderr by default for git)
+	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
-		return repoDir, "", fmt.Errorf("could not get HEAD commit after %s: %w", operation, err)
+		op.mu.Lock()
+		op.Err = fmt.Errorf("failed to get stdout pipe for %s: %w", operationDesc, err)
+		op.Status = "error"
+		op.Done = true
+		op.mu.Unlock()
+		return
 	}
-	return repoDir, commitHash, nil
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		op.mu.Lock()
+		op.Err = fmt.Errorf("failed to get stderr pipe for %s: %w", operationDesc, err)
+		op.Status = "error"
+		op.Done = true
+		op.mu.Unlock()
+		return
+	}
+
+	if err := cmd.Start(); err != nil {
+		op.mu.Lock()
+		op.Err = fmt.Errorf("failed to start %s command: %w", operationDesc, err)
+		op.Status = "error"
+		op.Done = true
+		op.mu.Unlock()
+		log.Printf("%s command failed to start: %v", operationDesc, err)
+		return
+	}
+
+	var outputBuilder strings.Builder
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// Goroutine to read stdout
+	go func() {
+		defer wg.Done()
+		scanner := bufio.NewScanner(stdoutPipe)
+		for scanner.Scan() {
+			line := scanner.Text()
+			op.mu.Lock()
+			outputBuilder.WriteString(line + "\n")
+			op.Output = outputBuilder.String() // Update continuously
+			op.mu.Unlock()
+		}
+	}()
+
+	// Goroutine to read stderr (git progress is often here)
+	go func() {
+		defer wg.Done()
+		scanner := bufio.NewScanner(stderrPipe)
+		for scanner.Scan() {
+			line := scanner.Text()
+			op.mu.Lock()
+			outputBuilder.WriteString(line + "\n")
+			op.Output = outputBuilder.String() // Update continuously
+			op.mu.Unlock()
+		}
+	}()
+
+	wg.Wait() // Wait for both readers to finish
+
+	execErr := cmd.Wait()
+
+	op.mu.Lock()
+	defer op.mu.Unlock()
+
+	op.Output = strings.TrimSpace(outputBuilder.String())
+	op.Done = true
+	op.RepoDir = repoDir // Store the final repo directory
+
+	if execErr != nil {
+		op.Err = execErr
+		op.Status = "error"
+		log.Printf("%s command finished with error: %v\nOutput:\n%s", operationDesc, execErr, op.Output)
+	} else {
+		op.Status = "success"
+		log.Printf("%s command finished successfully.\nOutput:\n%s", operationDesc, op.Output)
+
+		// Get the HEAD commit hash after successful operation
+		commitHash, err := getHeadCommit(opCtx, repoDir)
+		if err != nil {
+			op.Err = fmt.Errorf("could not get HEAD commit after %s: %w", operationDesc, err)
+			op.Status = "error"
+			log.Printf("Failed to get HEAD commit after %s: %v", operationDesc, err)
+		} else {
+			op.CommitHash = commitHash
+		}
+	}
 }
 
+// repoHandler now simply renders the repo page, assuming the repo is already available.
 func repoHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
-	// Expecting URL path like /repo/{owner}/{repo}
 	parts := strings.Split(r.URL.Path, "/")
 	if len(parts) < 4 || parts[1] != "repo" {
 		http.Error(w, "Invalid repository URL", http.StatusBadRequest)
@@ -1229,19 +1327,31 @@ func repoHandler(w http.ResponseWriter, r *http.Request) {
 	repo := parts[3]
 	repoFullName := owner + "/" + repo
 
+	repoDir := filepath.Join(workDir, "clone", owner, repo)
+
 	data := RepoPageData{
 		Owner:    owner,
 		Repo:     repo,
 		RepoName: repoFullName,
 	}
 
-	repoDir, commitHash, err := manageRepo(r.Context(), repoFullName)
-	if err != nil {
-		data.Error = err.Error()
-		log.Printf("Error managing repo %s in %s: %v", repoFullName, repoDir, err)
+	// Verify the repo directory exists
+	_, err := os.Stat(repoDir)
+	if os.IsNotExist(err) {
+		data.Error = fmt.Sprintf("Repository not found at %s. Please go back and try again.", repoDir)
+		log.Printf("Repository directory not found: %s", repoDir)
+	} else if err != nil {
+		data.Error = fmt.Sprintf("Error accessing repository path %s: %v", repoDir, err)
+		log.Printf("Error accessing repository path %s: %v", repoDir, err)
 	} else {
-		data.CommitHash = commitHash
-		log.Printf("Successfully managed repo %s, commit %s in %s", repoFullName, commitHash, repoDir)
+		// If repo exists, get the current commit hash
+		commitHash, err := getHeadCommit(r.Context(), repoDir)
+		if err != nil {
+			data.Error = fmt.Sprintf("Error getting HEAD commit for %s: %v", repoFullName, err)
+			log.Printf("Error getting HEAD commit for %s: %v", repoFullName, err)
+		} else {
+			data.CommitHash = commitHash
+		}
 	}
 
 	if err := repoTmpl.Execute(w, data); err != nil {
