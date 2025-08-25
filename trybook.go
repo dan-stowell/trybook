@@ -84,9 +84,7 @@ const htmlContent = `
         <ul>
             {{range .Worktrees}}
             <li>
-                <strong>Path:</strong> {{.Path}}<br>
-                <strong>Branch:</strong> {{.Branch}}<br>
-                <strong>HEAD:</strong> {{.HEAD}}
+                <a href="/notebook/{{.Branch}}">{{if .Prompt}}{{.Prompt}}{{else}}{{.Branch}}{{end}}</a>
             </li>
             {{end}}
         </ul>
@@ -127,9 +125,10 @@ const htmlContent = `
 `
 
 type Worktree struct {
-	Path   string
-	HEAD   string
-	Branch string
+	Path    string
+	HEAD    string
+	Branch  string
+	Prompt  string // Added to store the initial prompt
 }
 
 type PageData struct {
@@ -138,7 +137,7 @@ type PageData struct {
 	Worktrees []Worktree
 }
 
-func handler(w http.ResponseWriter, r *http.Request, repoName string, repoPath string) {
+func handler(w http.ResponseWriter, r *http.Request, repoName string, repoPath string, db *sql.DB) {
 	tmpl, err := template.New("index").Parse(htmlContent)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -171,6 +170,17 @@ func handler(w http.ResponseWriter, r *http.Request, repoName string, repoPath s
 	}
 	if currentWorktree.Path != "" {
 		worktrees = append(worktrees, currentWorktree)
+	}
+
+	// Query database for prompts associated with each branch
+	for i, wt := range worktrees {
+		row := db.QueryRow("SELECT command FROM commands WHERE branch_name = ? ORDER BY timestamp DESC LIMIT 1", wt.Branch)
+		var prompt string
+		err := row.Scan(&prompt)
+		if err != nil && err != sql.ErrNoRows {
+			log.Printf("Failed to get prompt for branch %s: %v", wt.Branch, err)
+		}
+		worktrees[i].Prompt = prompt
 	}
 
 	data := PageData{
@@ -318,7 +328,7 @@ func main() {
 	}
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		handler(w, r, repoName, *repoFlag)
+		handler(w, r, repoName, *repoFlag, db)
 	})
 	http.HandleFunc("/notebook/", notebookHandler) // New route for notebooks
 	http.HandleFunc("/run", func(w http.ResponseWriter, r *http.Request) {
