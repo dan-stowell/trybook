@@ -1,0 +1,9 @@
+TRYBOOK=$HOME/.trybook
+mkdir -p $TRYBOOK/clone
+cd $TRYBOOK
+mkdir -p github.com/buildbuddy-io
+git clone git@github.com:buildbuddy-io/buildbuddy.git --single-branch --depth 1 github.com/buildbuddy-io/buildbuddy
+mkdir -p $HOME/.trybook/worktree/github.com/buildbuddy-io
+WT=buildbuddy-`date +"%Y-%m-%dT%H-%M-%S"`-`sort -R /usr/share/dict/words | head -n1`
+cd $TRYBOOK/clone/github.com/buildbuddy-io/buildbuddy
+git worktree add -b "$WT" "$HOME/.trybook/worktree/github.com/buildbuddy-io/$WT"
