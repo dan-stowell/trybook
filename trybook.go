@@ -8,7 +8,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec" // For running git commands
 	"path/filepath"
+	"strings" // For string manipulation
+	"time"    // For timestamp in branch name
 
 	_ "modernc.org/sqlite" // Import for SQLite driver
 )
@@ -122,7 +125,7 @@ func handler(w http.ResponseWriter, r *http.Request, repoName string) {
 	tmpl.Execute(w, data)
 }
 
-func runHandler(w http.ResponseWriter, r *http.Request, db *sql.DB) {
+func runHandler(w http.ResponseWriter, r *http.Request, db *sql.DB, repoPath string, tryDir string) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -130,18 +133,55 @@ func runHandler(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 
 	command := r.FormValue("command")
 
-	// Store the command in the database
-	insertSQL := `INSERT INTO commands(command) VALUES(?)`
-	_, err := db.Exec(insertSQL, command)
+	// Get current commit hash
+	cmd := exec.Command("git", "rev-parse", "HEAD")
+	cmd.Dir = repoPath
+	commitHashBytes, err := cmd.Output()
+	if err != nil {
+		log.Printf("Failed to get current commit hash: %v", err)
+		http.Error(w, "Internal server error: failed to get commit hash", http.StatusInternalServerError)
+		return
+	}
+	commitHash := strings.TrimSpace(string(commitHashBytes))
+
+	// Generate branch and worktree name
+	repoBaseName := filepath.Base(repoPath)
+	timestamp := time.Now().Format("2006-01-02")
+	commandWords := strings.Fields(command)
+	var ideaSlug string
+	if len(commandWords) > 0 {
+		ideaSlug = strings.Join(commandWords[:min(len(commandWords), 3)], "-")
+	}
+	branchName := fmt.Sprintf("%s-%s-%s", repoBaseName, timestamp, ideaSlug)
+	worktreePath := filepath.Join(tryDir, "worktree", branchName)
+
+	// Create new branch and worktree
+	cmd = exec.Command("git", "worktree", "add", "-b", branchName, worktreePath, "HEAD")
+	cmd.Dir = repoPath
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("Failed to create worktree and branch: %v\nOutput: %s", err, output)
+		http.Error(w, fmt.Sprintf("Internal server error: failed to create worktree/branch. Output: %s", output), http.StatusInternalServerError)
+		return
+	}
+
+	// Store the command, repo info, and branch name in the database
+	insertSQL := `INSERT INTO commands(command, repo_path, commit_hash, branch_name) VALUES(?, ?, ?, ?)`
+	_, err = db.Exec(insertSQL, command, repoPath, commitHash, branchName)
 	if err != nil {
 		log.Printf("Failed to insert command into DB: %v", err)
 		http.Error(w, "Internal server error: failed to store command", http.StatusInternalServerError)
 		return
 	}
 
-	// For now, just echo the command back.
-	// In a real application, you would execute the command and return its output.
-	fmt.Fprintf(w, "You entered: %s\n(Command stored in DB. Execution not yet implemented)", command)
+	fmt.Fprintf(w, "You entered: %s\nNew branch '%s' and worktree created at '%s'.\n(Command stored in DB. Execution not yet implemented)", command, branchName, worktreePath)
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func main() {
@@ -177,6 +217,9 @@ func main() {
 	CREATE TABLE IF NOT EXISTS commands (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		command TEXT NOT NULL,
+		repo_path TEXT NOT NULL,
+		commit_hash TEXT NOT NULL,
+		branch_name TEXT NOT NULL,
 		timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
 	);`
 	_, err = db.Exec(createTableSQL)
@@ -188,7 +231,7 @@ func main() {
 		handler(w, r, repoName)
 	})
 	http.HandleFunc("/run", func(w http.ResponseWriter, r *http.Request) {
-		runHandler(w, r, db)
+		runHandler(w, r, db, *repoFlag, *tryDirFlag)
 	})
 
 	port := ":8080"
