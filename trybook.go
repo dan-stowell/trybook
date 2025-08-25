@@ -78,6 +78,21 @@ const htmlContent = `
     <h1>trybook: {{.RepoName}}</h1>
     <div id="content">
         <pre id="output"></pre>
+
+        <h2>Worktrees</h2>
+        {{if .Worktrees}}
+        <ul>
+            {{range .Worktrees}}
+            <li>
+                <strong>Path:</strong> {{.Path}}<br>
+                <strong>Branch:</strong> {{.Branch}}<br>
+                <strong>HEAD:</strong> {{.HEAD}}
+            </li>
+            {{end}}
+        </ul>
+        {{else}}
+        <p>No worktrees found for this repository.</p>
+        {{end}}
     </div>
     <form id="inputForm">
         <input type="text" id="commandInput" placeholder="Enter command" autofocus>
@@ -111,16 +126,53 @@ const htmlContent = `
 </html>
 `
 
-func handler(w http.ResponseWriter, r *http.Request, repoName string) {
+type Worktree struct {
+	Path  string
+	HEAD  string
+	Branch string
+}
+
+func handler(w http.ResponseWriter, r *http.Request, repoName string, repoPath string) {
 	tmpl, err := template.New("index").Parse(htmlContent)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	// Get worktree list
+	cmd := exec.Command("git", "worktree", "list", "--porcelain")
+	cmd.Dir = repoPath
+	output, err := cmd.Output()
+	if err != nil {
+		log.Printf("Failed to list worktrees: %v", err)
+		// Don't error out, just don't show worktrees
+	}
+
+	var worktrees []Worktree
+	lines := strings.Split(string(output), "\n")
+	currentWorktree := Worktree{}
+	for _, line := range lines {
+		if strings.HasPrefix(line, "worktree ") {
+			if currentWorktree.Path != "" {
+				worktrees = append(worktrees, currentWorktree)
+			}
+			currentWorktree = Worktree{Path: strings.TrimPrefix(line, "worktree ")}
+		} else if strings.HasPrefix(line, "HEAD ") {
+			currentWorktree.HEAD = strings.TrimPrefix(line, "HEAD ")
+		} else if strings.HasPrefix(line, "branch ") {
+			currentWorktree.Branch = strings.TrimPrefix(line, "branch refs/heads/")
+		}
+	}
+	if currentWorktree.Path != "" {
+		worktrees = append(worktrees, currentWorktree)
+	}
+
 	data := struct {
-		RepoName string
+		RepoName  string
+		Worktrees []Worktree
 	}{
-		RepoName: repoName,
+		RepoName:  repoName,
+		Worktrees: worktrees,
 	}
 	tmpl.Execute(w, data)
 }
@@ -242,7 +294,7 @@ func main() {
 	}
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		handler(w, r, repoName)
+		handler(w, r, repoName, *repoFlag)
 	})
 	http.HandleFunc("/run", func(w http.ResponseWriter, r *http.Request) {
 		runHandler(w, r, db, *repoFlag, *tryDirFlag)
