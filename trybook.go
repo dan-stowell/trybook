@@ -205,7 +205,7 @@ const notebookHTML = `<!DOCTYPE html>
 
     <template id="llmResponseTemplate">
       <div class="llm-response-entry" style="margin-top: 1rem; padding: 0.5rem 1rem; border: 1px solid #ddd; border-radius: 4px; background-color: #fcfcfc; text-align: left; position: relative;">
-        <div style="font-weight: bold; margin-bottom: 0.5rem;" class="llm-title"></div>
+        <div style="font-weight: normal; font-size: 0.9em; margin-bottom: 0.5rem;" class="llm-title"></div>
         <pre class="output-area" style="white-space: pre-wrap; font-family: monospace; text-align: left; margin: 0; padding-left: 0em;"></pre>
         <pre class="raw-output-area" style="white-space: pre-wrap; font-family: monospace; text-align: left; margin: 0; background-color: #eee; padding: 0.5rem; border-radius: 4px; display: none; max-height: 200px; overflow-y: auto;"></pre>
       </div>
