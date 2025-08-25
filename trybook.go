@@ -20,7 +20,7 @@ const htmlContent = `
 <!DOCTYPE html>
 <html>
 <head>
-    <title>trybook</title>
+    <title>trybook: {{.Title}}</title>
     <style>
         body {
             font-family: sans-serif;
@@ -127,9 +127,15 @@ const htmlContent = `
 `
 
 type Worktree struct {
-	Path  string
-	HEAD  string
+	Path   string
+	HEAD   string
 	Branch string
+}
+
+type PageData struct {
+	Title     string
+	RepoName  string
+	Worktrees []Worktree
 }
 
 func handler(w http.ResponseWriter, r *http.Request, repoName string, repoPath string) {
@@ -167,12 +173,30 @@ func handler(w http.ResponseWriter, r *http.Request, repoName string, repoPath s
 		worktrees = append(worktrees, currentWorktree)
 	}
 
-	data := struct {
-		RepoName  string
-		Worktrees []Worktree
-	}{
+	data := PageData{
+		Title:     "trybook: " + repoName,
 		RepoName:  repoName,
 		Worktrees: worktrees,
+	}
+	tmpl.Execute(w, data)
+}
+
+func notebookHandler(w http.ResponseWriter, r *http.Request) {
+	branchName := strings.TrimPrefix(r.URL.Path, "/notebook/")
+	if branchName == "" {
+		http.Error(w, "Branch name not provided", http.StatusBadRequest)
+		return
+	}
+
+	tmpl, err := template.New("notebook").Parse(htmlContent)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	data := PageData{
+		Title:    branchName,
+		RepoName: "", // Not relevant for notebook page title
 	}
 	tmpl.Execute(w, data)
 }
@@ -296,6 +320,7 @@ func main() {
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		handler(w, r, repoName, *repoFlag)
 	})
+	http.HandleFunc("/notebook/", notebookHandler) // New route for notebooks
 	http.HandleFunc("/run", func(w http.ResponseWriter, r *http.Request) {
 		runHandler(w, r, db, *repoFlag, *tryDirFlag)
 	})
