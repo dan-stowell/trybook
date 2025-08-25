@@ -13,18 +13,65 @@ const htmlContent = `
 <head>
     <title>TryBook</title>
     <style>
-        body { font-family: sans-serif; margin: 2em; }
-        input[type="text"] { width: 80%; padding: 0.5em; }
-        button { padding: 0.5em 1em; }
+        body {
+            font-family: sans-serif;
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+        }
+        h1 {
+            margin: 0 2em;
+            padding-top: 1em;
+        }
+        #content {
+            flex-grow: 1;
+            padding: 0 2em;
+            overflow-y: auto; /* In case content overflows */
+        }
+        #inputForm {
+            display: flex;
+            padding: 1em 2em;
+            border-top: 1px solid #eee;
+            background-color: #f9f9f9;
+        }
+        input[type="text"] {
+            flex-grow: 1;
+            padding: 0.5em;
+            margin-right: 1em;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        button {
+            padding: 0.5em 1em;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        #output {
+            background-color: #f4f4f4;
+            padding: 1em;
+            border-radius: 4px;
+            white-space: pre-wrap;
+            word-break: break-all;
+            margin-top: 1em;
+        }
     </style>
 </head>
 <body>
     <h1>TryBook</h1>
+    <div id="content">
+        <pre id="output"></pre>
+    </div>
     <form id="inputForm">
         <input type="text" id="commandInput" placeholder="Enter command" autofocus>
         <button type="submit">Run</button>
     </form>
-    <pre id="output"></pre>
 
     <script>
         document.getElementById('inputForm').addEventListener('submit', async function(event) {
@@ -32,6 +79,7 @@ const htmlContent = `
             const command = document.getElementById('commandInput').value;
             const outputElement = document.getElementById('output');
             outputElement.textContent = 'Running...';
+            document.getElementById('commandInput').value = ''; // Clear input after submission
 
             try {
                 const response = await fetch('/run', {
