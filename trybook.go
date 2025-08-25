@@ -72,7 +72,7 @@ const htmlContent = `
     </style>
 </head>
 <body>
-    <h1>trybook</h1>
+    <h1>trybook: {{.RepoName}}</h1>
     <div id="content">
         <pre id="output"></pre>
     </div>
@@ -108,13 +108,18 @@ const htmlContent = `
 </html>
 `
 
-func handler(w http.ResponseWriter, r *http.Request) {
+func handler(w http.ResponseWriter, r *http.Request, repoName string) {
 	tmpl, err := template.New("index").Parse(htmlContent)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	tmpl.Execute(w, nil)
+	data := struct {
+		RepoName string
+	}{
+		RepoName: repoName,
+	}
+	tmpl.Execute(w, data)
 }
 
 func runHandler(w http.ResponseWriter, r *http.Request, db *sql.DB) {
@@ -150,6 +155,7 @@ func main() {
 	repoFlag := flag.String("repo", ".", "Path to the local git repository")
 	flag.Parse()
 
+	repoName := filepath.Base(*repoFlag)
 	log.Printf("Using repository: %s", *repoFlag)
 
 	// Ensure the directory exists
@@ -178,7 +184,9 @@ func main() {
 		log.Fatalf("Failed to create table: %v", err)
 	}
 
-	http.HandleFunc("/", handler)
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		handler(w, r, repoName)
+	})
 	http.HandleFunc("/run", func(w http.ResponseWriter, r *http.Request) {
 		runHandler(w, r, db)
 	})
