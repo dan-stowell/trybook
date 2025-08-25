@@ -251,7 +251,7 @@ const notebookHTML = `<!DOCTYPE html>
         // Create prompt log entry
         const promptClone = document.importNode(promptLogTemplate.content, true);
         const promptLogEntry = promptClone.querySelector('.prompt-log-entry');
-        promptLogEntry.textContent = 'Prompt: "' + promptText + '"';
+        promptLogEntry.textContent = promptText;
         taskLogContainer.append(promptLogEntry); // Append prompt box first
 
         // Create UI for Gemini
