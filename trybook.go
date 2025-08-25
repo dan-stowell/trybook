@@ -37,18 +37,20 @@ const htmlContent = `
         }
         input[type="text"] {
             flex-grow: 1;
-            padding: 0.5em;
+            padding: 0.8em; /* Increased padding */
             margin-right: 1em;
             border: 1px solid #ccc;
             border-radius: 4px;
+            font-size: 1.1em; /* Larger font size */
         }
         button {
-            padding: 0.5em 1em;
+            padding: 0.8em 1.5em; /* Increased padding */
             background-color: #007bff;
             color: white;
             border: none;
             border-radius: 4px;
             cursor: pointer;
+            font-size: 1.1em; /* Larger font size */
         }
         button:hover {
             background-color: #0056b3;
