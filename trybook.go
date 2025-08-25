@@ -11,7 +11,7 @@ const htmlContent = `
 <!DOCTYPE html>
 <html>
 <head>
-    <title>TryBook</title>
+    <title>trybook</title>
     <style>
         body {
             font-family: sans-serif;
@@ -64,7 +64,7 @@ const htmlContent = `
     </style>
 </head>
 <body>
-    <h1>TryBook</h1>
+    <h1>trybook</h1>
     <div id="content">
         <pre id="output"></pre>
     </div>
