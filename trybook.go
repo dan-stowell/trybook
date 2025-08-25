@@ -16,7 +16,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strings"
-	"sync" // Already present
+	"sync"
 	"syscall"
 	"time"
 )
@@ -26,6 +26,29 @@ var r *rand.Rand
 
 func init() {
 	r = rand.New(rand.NewSource(time.Now().UnixNano()))
+}
+
+// RepoOperation holds the output, status, and summary for a single git repository operation.
+type RepoOperation struct {
+	mu         sync.RWMutex // Protects fields of this RepoOperation
+	Output     string       // Stores combined stdout/stderr/progress
+	Status     string       // "running", "success", "error"
+	Done       bool         // if true, the operation has finished processing (either success or error)
+	Err        error        // Stores the Go error if operation failed
+	RepoDir    string       // Path to the cloned/pulled repository
+	CommitHash string       // HEAD commit hash after successful operation
+	RepoName   string       // Full name of the repository (owner/repo)
+}
+
+var (
+	// repoOperations maps an operation ID to its RepoOperation struct.
+	repoOperations   = make(map[string]*RepoOperation)
+	repoOperationsMu sync.RWMutex
+)
+
+// generateOperationID creates a unique ID for a repository operation.
+func generateOperationID() string {
+	return fmt.Sprintf("%x", r.Int63())
 }
 
 const indexHTML = `<!DOCTYPE html>
@@ -42,18 +65,43 @@ const indexHTML = `<!DOCTYPE html>
   .sugg-item:hover { background: #f7f7f7; }
   .sugg-title { font-weight: 600; }
   .sugg-desc { color: #555; font-size: 0.9rem; }
+  #repo-status-container {
+    margin-top: 1rem;
+    padding: 1rem;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    background-color: #f9f9f9;
+    display: none; /* Hidden by default */
+  }
+  #repo-status-output {
+    white-space: pre-wrap;
+    font-family: monospace;
+    font-size: 0.9em;
+    max-height: 200px;
+    overflow-y: auto;
+    background-color: #eee;
+    padding: 0.5rem;
+    border-radius: 4px;
+    margin-top: 0.5rem;
+  }
 </style>
 </head>
 <body style="padding: 1rem; text-align: left;">
   <div>
     <h1>trybook</h1>
-    <form method="GET" action="/">
+    <form id="repoForm">
       <div style="display: flex; gap: 0.5rem;">
         <input type="url" id="repoUrl" name="repo" placeholder="github repo" value="{{.Query}}" autofocus style="flex-grow: 1; font-size: 1.25rem; padding: 0.6rem 0.75rem;">
-        <button type="submit" style="font-size: 1.1rem; padding: 0.6rem 1rem;">Open</button>
+        <button type="submit" id="openButton" style="font-size: 1.1rem; padding: 0.6rem 1rem;">Open</button>
       </div>
     </form>
     <div id="suggestions" style="margin-top: 0.5rem; text-align: left;"></div>
+
+    <div id="repo-status-container">
+      <p id="repo-status-message" style="font-weight: bold;"></p>
+      <pre id="repo-status-output"></pre>
+      <p id="repo-status-error" style="color: #b00020; font-size: 0.95rem; margin-top: 0.5rem; white-space: pre-wrap;"></p>
+    </div>
 
     {{if .Error}}
     <p style="color: #b00020; font-size: 0.95rem; margin-top: 1rem; white-space: pre-wrap;">Error: {{.Error}}</p>
@@ -64,16 +112,26 @@ const indexHTML = `<!DOCTYPE html>
   </div>
 <script>
 (function(){
-  const input = document.getElementById('repoUrl');
-  const box = document.getElementById('suggestions');
-  let controller = null;
+  const repoInput = document.getElementById('repoUrl');
+  const repoForm = document.getElementById('repoForm');
+  const openButton = document.getElementById('openButton');
+  const suggestionsBox = document.getElementById('suggestions');
+
+  const repoStatusContainer = document.getElementById('repo-status-container');
+  const repoStatusMessage = document.getElementById('repo-status-message');
+  const repoStatusOutput = document.getElementById('repo-status-output');
+  const repoStatusError = document.getElementById('repo-status-error');
+
+  let searchController = null;
   let debounceTimer = null;
+  let pollingIntervalId = null;
+  let currentRepoOperationTaskId = null;
 
-  function clearBox() { box.innerHTML = ''; }
+  function clearSuggestionsBox() { suggestionsBox.innerHTML = ''; }
 
-  function render(items) {
-    if (!items || items.length === 0) { clearBox(); return; }
-    box.innerHTML = items.map(function(it) {
+  function renderSuggestions(items) {
+    if (!items || items.length === 0) { clearSuggestionsBox(); return; }
+    suggestionsBox.innerHTML = items.map(function(it) {
       var desc = it.description ? it.description : '';
       var escFullName = it.fullName.replace(/&/g,'&amp;').replace(/</g,'&lt;');
       var escDesc = desc.replace(/&/g,'&amp;').replace(/</g,'&lt;');
@@ -82,39 +140,166 @@ const indexHTML = `<!DOCTYPE html>
                '<div class="sugg-desc">' + escDesc + '</div>' +
              '</div>';
     }).join('');
-    Array.prototype.forEach.call(box.querySelectorAll('.sugg-item'), function(el) {
+    Array.prototype.forEach.call(suggestionsBox.querySelectorAll('.sugg-item'), function(el) {
       el.addEventListener('click', function() {
         const repoFullName = el.getAttribute('data-repo');
-        window.location.href = '/repo/' + repoFullName;
+        repoInput.value = 'https://github.com/' + repoFullName;
+        repoForm.dispatchEvent(new Event('submit')); // Trigger form submission
       });
     });
   }
 
-  async function search(q){
-    if (controller) controller.abort();
-    controller = new AbortController();
+  async function searchRepos(q){
+    if (searchController) searchController.abort();
+    searchController = new AbortController();
     try{
-      const resp = await fetch('/api/search?query=' + encodeURIComponent(q), { signal: controller.signal });
-      if (!resp.ok) { clearBox(); return; }
+      const resp = await fetch('/api/search?query=' + encodeURIComponent(q), { signal: searchController.signal });
+      if (!resp.ok) { clearSuggestionsBox(); return; }
       const data = await resp.json();
-      render(Array.isArray(data) ? data.slice(0,5) : []);
+      renderSuggestions(Array.isArray(data) ? data.slice(0,5) : []);
     } catch(e) {
-      if (!(e && e.name === 'AbortError')) clearBox();
+      if (!(e && e.name === 'AbortError')) clearSuggestionsBox();
     }
   }
 
-  input.addEventListener('input', function() {
-    const q = input.value.trim();
-    if (q.length < 2) { clearBox(); if (controller) controller.abort(); return; }
+  repoInput.addEventListener('input', function() {
+    const q = repoInput.value.trim();
+    if (q.length < 2) { clearSuggestionsBox(); if (searchController) searchController.abort(); return; }
     clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(function(){ search(q); }, 250);
+    debounceTimer = setTimeout(function(){ searchRepos(q); }, 250);
   });
 
   document.addEventListener('click', function(e) {
-    if (!box.contains(e.target) && e.target !== input) {
-      clearBox();
+    if (!suggestionsBox.contains(e.target) && e.target !== repoInput) {
+      clearSuggestionsBox();
     }
   });
+
+  function showRepoStatus(message, output = '', error = '') {
+    repoStatusContainer.style.display = 'block';
+    repoStatusMessage.textContent = message;
+    repoStatusOutput.textContent = output;
+    repoStatusError.textContent = error;
+  }
+
+  function hideRepoStatus() {
+    repoStatusContainer.style.display = 'none';
+    repoStatusMessage.textContent = '';
+    repoStatusOutput.textContent = '';
+    repoStatusError.textContent = '';
+  }
+
+  function disableForm() {
+    repoInput.disabled = true;
+    openButton.disabled = true;
+    clearSuggestionsBox();
+  }
+
+  function enableForm() {
+    repoInput.disabled = false;
+    openButton.disabled = false;
+    repoInput.focus();
+  }
+
+  async function startRepoOperation(repoUrl) {
+    disableForm();
+    showRepoStatus('Starting repository operation...');
+    try {
+      const response = await fetch('/api/start-repo-operation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ repo: repoUrl }).toString(),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to start repo operation');
+      }
+      currentRepoOperationTaskId = data.taskId;
+      pollRepoOperationStatus(); // Start polling immediately
+      pollingIntervalId = setInterval(pollRepoOperationStatus, 1000);
+    } catch (error) {
+      showRepoStatus('Error initiating operation:', '', error.message);
+      enableForm();
+    }
+  }
+
+  async function pollRepoOperationStatus() {
+    if (!currentRepoOperationTaskId) {
+      clearInterval(pollingIntervalId);
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/poll-repo-operation/' + currentRepoOperationTaskId);
+      const data = await response.json();
+
+      if (!response.ok) {
+        clearInterval(pollingIntervalId);
+        showRepoStatus('Error polling status:', '', data.error || 'Unknown error');
+        enableForm();
+        return;
+      }
+
+      let message = '';
+      switch (data.status) {
+        case 'running':
+          message = 'Repository operation in progress...';
+          break;
+        case 'success':
+          message = 'Repository operation completed successfully.';
+          break;
+        case 'error':
+          message = 'Repository operation failed.';
+          break;
+        default:
+          message = 'Unknown status.';
+      }
+
+      showRepoStatus(message, data.output, data.error || '');
+
+      if (data.done) {
+        clearInterval(pollingIntervalId);
+        if (data.status === 'success') {
+          // Redirect to the repo page
+          window.location.href = '/repo/' + data.repoName;
+        } else {
+          enableForm();
+        }
+      }
+    } catch (error) {
+      clearInterval(pollingIntervalId);
+      showRepoStatus('Error during polling:', '', error.message);
+      enableForm();
+    }
+  }
+
+  repoForm.addEventListener('submit', function(event) {
+    event.preventDefault();
+    const repoUrl = repoInput.value.trim();
+    if (repoUrl) {
+      startRepoOperation(repoUrl);
+    } else {
+      alert('Please enter a GitHub repository URL.');
+    }
+  });
+
+  // Check if a repo param is present in the URL on page load, if so, start operation
+  const urlParams = new URLSearchParams(window.location.search);
+  const initialRepo = urlParams.get('repo');
+  const initialTaskId = urlParams.get('taskId'); // Added for direct task polling, if needed
+
+  if (initialRepo) {
+      repoInput.value = initialRepo; // Populate input for user
+      startRepoOperation(initialRepo);
+  } else if (initialTaskId) { // If we ever want to just poll by taskId directly (e.g., for recovery)
+      currentRepoOperationTaskId = initialTaskId;
+      showRepoStatus('Resuming repository operation...');
+      pollRepoOperationStatus();
+      pollingIntervalId = setInterval(pollRepoOperationStatus, 1000);
+  } else {
+    enableForm(); // Ensure form is enabled if no operation is starting
+    hideRepoStatus(); // Hide status container by default
+  }
 })();
 </script>
 </body>
@@ -523,12 +708,14 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", indexHandler)
 	mux.HandleFunc("/api/search", apiSearchHandler)
-	mux.HandleFunc("/repo/", repoHandler)                           // Handle /repo/{owner}/{repo}
-	mux.HandleFunc("/create-notebook/", createNotebookHandler)      // POST /create-notebook/{owner}/{repo}
-	mux.HandleFunc("/notebook/", notebookHandler)                   // GET /notebook/{owner}/{repo}/{notebook_name}
-	mux.HandleFunc("/api/run-prompt/", apiRunPromptHandler)         // POST /api/run-prompt/{owner}/{repo}/{notebook_name}
-	mux.HandleFunc("/api/poll-task/", apiPollTaskHandler)           // GET /api/poll-task/{task_id}
-	mux.HandleFunc("/api/summarize-task/", apiSummarizeTaskHandler) // GET /api/summarize-task/{task_id}
+	mux.HandleFunc("/api/start-repo-operation", apiStartRepoOperationHandler) // New API to start git operations
+	mux.HandleFunc("/api/poll-repo-operation/", apiPollRepoOperationHandler)   // New API to poll git operation status
+	mux.HandleFunc("/repo/", repoHandler)                                      // Handle /repo/{owner}/{repo}
+	mux.HandleFunc("/create-notebook/", createNotebookHandler)                // POST /create-notebook/{owner}/{repo}
+	mux.HandleFunc("/notebook/", notebookHandler)                             // GET /notebook/{owner}/{repo}/{notebook_name}
+	mux.HandleFunc("/api/run-prompt/", apiRunPromptHandler)                   // POST /api/run-prompt/{owner}/{repo}/{notebook_name}
+	mux.HandleFunc("/api/poll-task/", apiPollTaskHandler)                     // GET /api/poll-task/{task_id}
+	mux.HandleFunc("/api/summarize-task/", apiSummarizeTaskHandler)           // GET /api/summarize-task/{task_id}
 
 	addr := "127.0.0.1:8080"
 
@@ -566,6 +753,7 @@ func indexHandler(w http.ResponseWriter, r *http.Request) {
 
 	data := IndexData{
 		Query: r.URL.Query().Get("repo"),
+		// taskId is now managed by JS, but keeping Query for initial input population
 	}
 
 	if err := indexTmpl.Execute(w, data); err != nil {
@@ -881,51 +1069,49 @@ func buildLLMResponseData(llmResp *LLMResponse, ctx context.Context) map[string]
 	return data
 }
 
-// apiPollTaskHandler returns the current status and output of a task.
-// This handler is less detailed than apiSummarizeTaskHandler and primarily shows Gemini's state.
-func apiPollTaskHandler(w http.ResponseWriter, r *http.Request) {
+// apiStartRepoOperationHandler starts a long-running git clone/pull operation.
+func apiStartRepoOperationHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	if r.Method != http.MethodGet {
+	if r.Method != http.MethodPost {
 		http.Error(w, `{"error": "Method not allowed"}`, http.StatusMethodNotAllowed)
 		return
 	}
 
-	parts := strings.Split(r.URL.Path, "/")
-	if len(parts) < 4 || parts[2] != "poll-task" {
-		http.Error(w, `{"error": "Invalid API URL"}`, http.StatusBadRequest)
-		return
-	}
-	promptExecutionID := parts[3]
-
-	promptExecutionsMu.RLock()
-	pe, ok := promptExecutions[promptExecutionID]
-	promptExecutionsMu.RUnlock()
-
-	if !ok {
-		http.Error(w, `{"error": "Prompt execution not found"}`, http.StatusNotFound)
+	repoURL := r.FormValue("repo")
+	if repoURL == "" {
+		http.Error(w, `{"error": "Repository URL cannot be empty"}`, http.StatusBadRequest)
 		return
 	}
 
-	// For apiPollTaskHandler, we'll return a combined status/output for simplicity,
-	// or indicate that it's deprecated in favor of summarize-task if this becomes complex.
-	// For now, let's just show Gemini's status as the "overall" for this legacy endpoint.
-	pe.Gemini.mu.RLock()
-	resp := map[string]interface{}{
-		"taskId": promptExecutionID,
-		"status": pe.Gemini.Status, // Report Gemini's status as primary
-		"output": pe.Gemini.Output, // Report Gemini's output as primary
-		"done":   pe.Gemini.Done,   // Report Gemini's done status
+	// Parse owner/repo from the input URL
+	owner, repo, err := parseGitHubInput(repoURL)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error": %q}`, err.Error()), http.StatusBadRequest)
+		return
 	}
-	if pe.Gemini.Err != nil {
-		resp["error"] = pe.Gemini.Err.Error()
-	}
-	pe.Gemini.mu.RUnlock()
+	repoFullName := owner + "/" + repo
 
-	json.NewEncoder(w).Encode(resp)
+	operationID := generateOperationID()
+
+	// Initialize RepoOperation struct
+	op := &RepoOperation{
+		Status:   "running",
+		RepoName: repoFullName,
+	}
+
+	repoOperationsMu.Lock()
+	repoOperations[operationID] = op
+	repoOperationsMu.Unlock()
+
+	// Start the git operation in a goroutine
+	go manageRepo(r.Context(), op)
+
+	log.Printf("Started repo operation %s for %s", operationID, repoFullName)
+	json.NewEncoder(w).Encode(map[string]string{"taskId": operationID})
 }
 
-// apiSummarizeTaskHandler returns summaries of both LLMs for a prompt execution.
-func apiSummarizeTaskHandler(w http.ResponseWriter, r *http.Request) {
+// apiPollRepoOperationHandler returns the current status and output of a git operation.
+func apiPollRepoOperationHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if r.Method != http.MethodGet {
 		http.Error(w, `{"error": "Method not allowed"}`, http.StatusMethodNotAllowed)
@@ -933,42 +1119,35 @@ func apiSummarizeTaskHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	parts := strings.Split(r.URL.Path, "/")
-	if len(parts) < 4 || parts[2] != "summarize-task" {
+	if len(parts) < 4 || parts[2] != "poll-repo-operation" {
 		http.Error(w, `{"error": "Invalid API URL"}`, http.StatusBadRequest)
 		return
 	}
-	promptExecutionID := parts[3]
+	operationID := parts[3]
 
-	promptExecutionsMu.RLock()
-	pe, ok := promptExecutions[promptExecutionID]
-	promptExecutionsMu.RUnlock()
+	repoOperationsMu.RLock()
+	op, ok := repoOperations[operationID]
+	repoOperationsMu.RUnlock()
 
 	if !ok {
-		http.Error(w, `{"error": "Prompt execution not found"}`, http.StatusNotFound)
+		http.Error(w, `{"error": "Repository operation not found"}`, http.StatusNotFound)
 		return
 	}
 
-	// Prepare responses for both Gemini and Claude
-	geminiResp := buildLLMResponseData(&pe.Gemini, r.Context())
-	claudeResp := buildLLMResponseData(&pe.Claude, r.Context())
-
-	// Determine overall status for the prompt execution
-	overallStatus := "running"
-	if (pe.Gemini.Done && pe.Gemini.Status == "success") && (pe.Claude.Done && pe.Claude.Status == "success") {
-		overallStatus = "success"
-	} else if (pe.Gemini.Done && pe.Gemini.Status == "error") || (pe.Claude.Done && pe.Claude.Status == "error") {
-		overallStatus = "error"
-	} else if pe.Gemini.Done && pe.Claude.Done { // Both done, but not both success (at least one error)
-		overallStatus = "error"
-	}
-
-	// Construct the full response for the client
+	op.mu.RLock()
 	resp := map[string]interface{}{
-		"taskId":        promptExecutionID,
-		"overallStatus": overallStatus, // Can be "running", "success", "error" based on both LLMs
-		"gemini":        geminiResp,
-		"claude":        claudeResp,
+		"taskId":     operationID,
+		"status":     op.Status,
+		"output":     op.Output,
+		"done":       op.Done,
+		"repoDir":    op.RepoDir,
+		"commitHash": op.CommitHash,
+		"repoName":   op.RepoName,
 	}
+	if op.Err != nil {
+		resp["error"] = op.Err.Error()
+	}
+	op.mu.RUnlock()
 
 	json.NewEncoder(w).Encode(resp)
 }
