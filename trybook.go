@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"os/signal"
 	"os/user"
 	"path/filepath"
 	"strings"
@@ -205,7 +204,7 @@ const notebookHTML = `<!DOCTYPE html>
 
     <template id="llmResponseTemplate">
       <div class="llm-response-entry" style="margin-top: 1rem; padding: 0.5rem 1rem; border: 1px solid #ddd; border-radius: 4px; background-color: #fcfcfc; text-align: left; position: relative;">
-        <div style="font-weight: normal; font-size: 0.9em; margin-bottom: 0.5rem;" class="llm-title"></div>
+        <div style="position: absolute; bottom: 0.5rem; right: 0.5rem; font-size: 0.75em; color: #888; background-color: rgba(255, 255, 255, 0.7); padding: 0.2em 0.5em; border-radius: 3px;" class="llm-title"></div>
         <pre class="output-area" style="white-space: pre-wrap; font-family: monospace; text-align: left; margin: 0; padding-left: 0em;"></pre>
         <pre class="raw-output-area" style="white-space: pre-wrap; font-family: monospace; text-align: left; margin: 0; background-color: #eee; padding: 0.5rem; border-radius: 4px; display: none; max-height: 200px; overflow-y: auto;"></pre>
       </div>
@@ -1104,8 +1103,8 @@ func generateNotebookName(repoFullName string) string {
 
 // createWorktree adds a new git worktree for a given base repository.
 // It returns the path to the new worktree and any error.
-func createWorktree(ctx context.Context, baseRepoDir, owner, repo, notebookName, branchName string) (string, error) {
-	worktreePath := filepath.Join(workDir, "worktree", owner, repo, notebookName)
+func createWorktree(ctx context.Context, baseRepoDir, owner, repo, notebookName, branchName string) (worktreePath string, err error) {
+	worktreePath = filepath.Join(workDir, "worktree", owner, repo, notebookName)
 
 	log.Printf("Starting git worktree add for %s on branch %s at %s", notebookName, branchName, worktreePath)
 	opStart := time.Now()
@@ -1255,6 +1254,7 @@ func apiSearchHandler(w http.ResponseWriter, r *http.Request) {
 	if q == "" || len(q) < 2 {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("[]"))
+		return
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
