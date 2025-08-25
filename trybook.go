@@ -147,7 +147,10 @@ func main() {
 	defaultTryDir := filepath.Join(homeDir, ".trybook")
 
 	tryDirFlag := flag.String("trydir", defaultTryDir, "Directory to store trybook data (SQLite DB)")
+	repoFlag := flag.String("repo", ".", "Path to the local git repository")
 	flag.Parse()
+
+	log.Printf("Using repository: %s", *repoFlag)
 
 	// Ensure the directory exists
 	if err := os.MkdirAll(*tryDirFlag, 0755); err != nil {
