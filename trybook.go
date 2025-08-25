@@ -1,10 +1,15 @@
 package main
 
 import (
+	"database/sql"
 	"fmt"
 	"html/template"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
+
+	_ "modernc.org/sqlite" // Import for SQLite driver
 )
 
 const htmlContent = `
@@ -111,21 +116,68 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	tmpl.Execute(w, nil)
 }
 
-func runHandler(w http.ResponseWriter, r *http.Request) {
+func runHandler(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
 	command := r.FormValue("command")
+
+	// Store the command in the database
+	insertSQL := `INSERT INTO commands(command) VALUES(?)`
+	_, err := db.Exec(insertSQL, command)
+	if err != nil {
+		log.Printf("Failed to insert command into DB: %v", err)
+		http.Error(w, "Internal server error: failed to store command", http.StatusInternalServerError)
+		return
+	}
+
 	// For now, just echo the command back.
 	// In a real application, you would execute the command and return its output.
-	fmt.Fprintf(w, "You entered: %s\n(Command execution not yet implemented)", command)
+	fmt.Fprintf(w, "You entered: %s\n(Command stored in DB. Execution not yet implemented)", command)
 }
 
 func main() {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		log.Fatalf("Error getting user home directory: %v", err)
+	}
+	defaultTryDir := filepath.Join(homeDir, ".trybook")
+
+	tryDirFlag := flag.String("trydir", defaultTryDir, "Directory to store trybook data (SQLite DB)")
+	flag.Parse()
+
+	// Ensure the directory exists
+	if err := os.MkdirAll(*tryDirFlag, 0755); err != nil {
+		log.Fatalf("Failed to create directory %s: %v", *tryDirFlag, err)
+	}
+
+	dbPath := filepath.Join(*tryDirFlag, "trybook.db")
+	log.Printf("Using SQLite database at: %s", dbPath)
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		log.Fatalf("Failed to open database: %v", err)
+	}
+	defer db.Close()
+
+	// Create 'commands' table if it doesn't exist
+	createTableSQL := `
+	CREATE TABLE IF NOT EXISTS commands (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		command TEXT NOT NULL,
+		timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+	);`
+	_, err = db.Exec(createTableSQL)
+	if err != nil {
+		log.Fatalf("Failed to create table: %v", err)
+	}
+
 	http.HandleFunc("/", handler)
-	http.HandleFunc("/run", runHandler)
+	http.HandleFunc("/run", func(w http.ResponseWriter, r *http.Request) {
+		runHandler(w, r, db)
+	})
 
 	port := ":8080"
 	log.Printf("Server starting on port %s\n", port)
