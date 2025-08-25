@@ -1152,6 +1152,98 @@ func apiPollRepoOperationHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+// apiPollTaskHandler returns the current status and output of a task.
+// This handler is less detailed than apiSummarizeTaskHandler and primarily shows Gemini's state.
+func apiPollTaskHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error": "Method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) < 4 || parts[2] != "poll-task" {
+		http.Error(w, `{"error": "Invalid API URL"}`, http.StatusBadRequest)
+		return
+	}
+	promptExecutionID := parts[3]
+
+	promptExecutionsMu.RLock()
+	pe, ok := promptExecutions[promptExecutionID]
+	promptExecutionsMu.RUnlock()
+
+	if !ok {
+		http.Error(w, `{"error": "Prompt execution not found"}`, http.StatusNotFound)
+		return
+	}
+
+	// For apiPollTaskHandler, we'll return a combined status/output for simplicity,
+	// or indicate that it's deprecated in favor of summarize-task if this becomes complex.
+	// For now, let's just show Gemini's status as the "overall" for this legacy endpoint.
+	pe.Gemini.mu.RLock()
+	resp := map[string]interface{}{
+		"taskId": promptExecutionID,
+		"status": pe.Gemini.Status, // Report Gemini's status as primary
+		"output": pe.Gemini.Output, // Report Gemini's output as primary
+		"done":   pe.Gemini.Done,   // Report Gemini's done status
+	}
+	if pe.Gemini.Err != nil {
+		resp["error"] = pe.Gemini.Err.Error()
+	}
+	pe.Gemini.mu.RUnlock()
+
+	json.NewEncoder(w).Encode(resp)
+}
+
+// apiSummarizeTaskHandler returns summaries of both LLMs for a prompt execution.
+func apiSummarizeTaskHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error": "Method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) < 4 || parts[2] != "summarize-task" {
+		http.Error(w, `{"error": "Invalid API URL"}`, http.StatusBadRequest)
+		return
+	}
+	promptExecutionID := parts[3]
+
+	promptExecutionsMu.RLock()
+	pe, ok := promptExecutions[promptExecutionID]
+	promptExecutionsMu.RUnlock()
+
+	if !ok {
+		http.Error(w, `{"error": "Prompt execution not found"}`, http.StatusNotFound)
+		return
+	}
+
+	// Prepare responses for both Gemini and Claude
+	geminiResp := buildLLMResponseData(&pe.Gemini, r.Context())
+	claudeResp := buildLLMResponseData(&pe.Claude, r.Context())
+
+	// Determine overall status for the prompt execution
+	overallStatus := "running"
+	if (pe.Gemini.Done && pe.Gemini.Status == "success") && (pe.Claude.Done && pe.Claude.Status == "success") {
+		overallStatus = "success"
+	} else if (pe.Gemini.Done && pe.Gemini.Status == "error") || (pe.Claude.Done && pe.Claude.Status == "error") {
+		overallStatus = "error"
+	} else if pe.Gemini.Done && pe.Claude.Done { // Both done, but not both success (at least one error)
+		overallStatus = "error"
+	}
+
+	// Construct the full response for the client
+	resp := map[string]interface{}{
+		"taskId":        promptExecutionID,
+		"overallStatus": overallStatus, // Can be "running", "success", "error" based on both LLMs
+		"gemini":        geminiResp,
+		"claude":        claudeResp,
+	}
+
+	json.NewEncoder(w).Encode(resp)
+}
+
 // getHeadCommit returns the SHA of the HEAD commit in the given repo directory.
 func getHeadCommit(ctx context.Context, repoDir string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
