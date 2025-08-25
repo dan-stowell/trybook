@@ -72,7 +72,7 @@ const htmlContent = `
     </div>
     <form id="inputForm">
         <input type="text" id="commandInput" placeholder="Enter command" autofocus>
-        <button type="submit">Run</button>
+        <button type="submit">try</button>
     </form>
 
     <script>
@@ -80,7 +80,7 @@ const htmlContent = `
             event.preventDefault();
             const command = document.getElementById('commandInput').value;
             const outputElement = document.getElementById('output');
-            outputElement.textContent = 'Running...';
+            outputElement.textContent = 'trying...';
             document.getElementById('commandInput').value = ''; // Clear input after submission
 
             try {
