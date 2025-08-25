@@ -164,6 +164,7 @@ type PromptExecution struct {
 	// Note: individual LLMResponse fields have their own mutexes.
 	Gemini LLMResponse
 	Claude LLMResponse
+	Codex  LLMResponse
 }
 
 var (
@@ -230,8 +231,8 @@ const notebookHTML = `<!DOCTYPE html>
       const llmResponseTemplate = document.getElementById('llmResponseTemplate');
 
       let isSubmitting = false; // Flag to prevent multiple submissions
-      // taskId -> {promptLogEntry, geminiUI: {llmResponseEntry, outputArea, toggleButton, rawOutputArea}, claudeUI: {llmResponseEntry, outputArea, toggleButton, rawOutputArea}, pollingIntervalId}
-      const activeTasks = {}; 
+      // taskId -> {promptLogEntry, geminiUI: {llmResponseEntry, outputArea, rawOutputArea}, claudeUI: {llmResponseEntry, outputArea, rawOutputArea}, codexUI: {llmResponseEntry, outputArea, rawOutputArea}, pollingIntervalId}
+      const activeTasks = {};
 
       // Helper to create UI for a single LLM response
       function createLLMResponseUI(llmName) {
@@ -258,7 +259,10 @@ const notebookHTML = `<!DOCTYPE html>
         // Create UI for Claude
         const claudeUI = createLLMResponseUI("Claude");
 
-        return { promptLogEntry, geminiUI, claudeUI };
+        // Create UI for Codex
+        const codexUI = createLLMResponseUI("Codex");
+
+        return { promptLogEntry, geminiUI, claudeUI, codexUI };
       }
 
       function updateOutput(outputAreaElement, output) {
@@ -335,6 +339,12 @@ const notebookHTML = `<!DOCTYPE html>
             updateOutput(promptExecUI.claudeUI.outputArea, claudeData.summary || "No summary available yet.");
             setLLMResponseStyle(promptExecUI.claudeUI.llmResponseEntry, claudeData.status);
 
+            // Update Codex UI
+            const codexData = data.codex;
+            updateRawOutput(promptExecUI.codexUI.rawOutputArea, codexData.output || "");
+            updateOutput(promptExecUI.codexUI.outputArea, codexData.summary || "No summary available yet.");
+            setLLMResponseStyle(promptExecUI.codexUI.llmResponseEntry, codexData.status);
+
             // Check overall status to decide when to stop polling and enable form
             if (data.overallStatus === 'success' || data.overallStatus === 'error') {
               clearInterval(promptExecUI.pollingIntervalId);
@@ -368,7 +378,7 @@ const notebookHTML = `<!DOCTYPE html>
 
         disableForm();
 
-        const newUI = createTaskLogUI(prompt); // Creates promptLogEntry, geminiUI, claudeUI
+        const newUI = createTaskLogUI(prompt); // Creates promptLogEntry, geminiUI, claudeUI, codexUI
         
         // Initialize Gemini UI
         updateOutput(newUI.geminiUI.outputArea, "Starting Gemini task...");
@@ -381,6 +391,13 @@ const notebookHTML = `<!DOCTYPE html>
         updateRawOutput(newUI.claudeUI.rawOutputArea, "No raw output yet.");
         newUI.claudeUI.rawOutputArea.style.display = 'none'; // Ensure raw output is hidden initially
         setLLMResponseStyle(newUI.claudeUI.llmResponseEntry, 'running');
+
+        // Initialize Codex UI
+        updateOutput(newUI.codexUI.outputArea, "Starting Codex task...");
+        updateRawOutput(newUI.codexUI.rawOutputArea, "No raw output yet.");
+        newUI.codexUI.rawOutputArea.style.display = 'none'; // Ensure raw output is hidden initially
+        setLLMResponseStyle(newUI.codexUI.llmResponseEntry, 'running');
+
 
         // Add event listeners to toggle raw output on click for the entire LLM response box
         function addToggleClickListener(uiElement) {
@@ -395,6 +412,7 @@ const notebookHTML = `<!DOCTYPE html>
         }
         addToggleClickListener(newUI.geminiUI);
         addToggleClickListener(newUI.claudeUI);
+        addToggleClickListener(newUI.codexUI);
 
         let taskId;
         try {
@@ -415,10 +433,15 @@ const notebookHTML = `<!DOCTYPE html>
           updateOutput(newUI.geminiUI.outputArea, errorMessage);
           setLLMResponseStyle(newUI.claudeUI.llmResponseEntry, 'error');
           updateOutput(newUI.claudeUI.outputArea, errorMessage);
+          setLLMResponseStyle(newUI.claudeUI.llmResponseEntry, 'error');
+          updateOutput(newUI.claudeUI.outputArea, errorMessage);
+          setLLMResponseStyle(newUI.codexUI.llmResponseEntry, 'error');
+          updateOutput(newUI.codexUI.outputArea, errorMessage);
           enableForm();
           newUI.promptLogEntry.remove();
           newUI.geminiUI.llmResponseEntry.remove();
           newUI.claudeUI.llmResponseEntry.remove();
+          newUI.codexUI.llmResponseEntry.remove();
           return;
         }
 
@@ -426,10 +449,12 @@ const notebookHTML = `<!DOCTYPE html>
           const errorMessage = 'Error: Did not receive a task ID from server.';
           updateOutput(newUI.geminiUI.outputArea, errorMessage);
           updateOutput(newUI.claudeUI.outputArea, errorMessage);
+          updateOutput(newUI.codexUI.outputArea, errorMessage);
           enableForm();
           newUI.promptLogEntry.remove();
           newUI.geminiUI.llmResponseEntry.remove();
           newUI.claudeUI.llmResponseEntry.remove();
+          newUI.codexUI.llmResponseEntry.remove();
           return;
         }
 
@@ -437,12 +462,14 @@ const notebookHTML = `<!DOCTYPE html>
           promptLogEntry: newUI.promptLogEntry,
           geminiUI: newUI.geminiUI,
           claudeUI: newUI.claudeUI,
+          codexUI: newUI.codexUI,
           pollingIntervalId: null,
         };
 
         // Initial messages for polling status
         updateOutput(newUI.geminiUI.outputArea, "Gemini task started, waiting for updates...");
         updateOutput(newUI.claudeUI.outputArea, "Claude task started, waiting for updates...");
+        updateOutput(newUI.codexUI.outputArea, "Codex task started, waiting for updates...");
         
         pollTask(taskId);
         activeTasks[taskId].pollingIntervalId = setInterval(() => pollTask(taskId), 1000);
@@ -639,6 +666,8 @@ func runLLMCommand(llmResponse *LLMResponse, worktreePath, llmName, prompt strin
 		if anthropicKey := os.Getenv("ANTHROPIC_API_KEY"); anthropicKey != "" {
 			extraEnv = append(extraEnv, "ANTHROPIC_API_KEY="+anthropicKey)
 		}
+	case "codex":
+		cmd = exec.CommandContext(ctx, "codex", "exec", prompt)
 	default:
 		llmResponse.mu.Lock()
 		llmResponse.Err = fmt.Errorf("unknown LLM: %s", llmName)
@@ -737,7 +766,7 @@ func runLLMCommand(llmResponse *LLMResponse, worktreePath, llmName, prompt strin
 // executePromptTask orchestrates the execution of multiple LLM commands for a single prompt.
 func executePromptTask(pe *PromptExecution, worktreePath, prompt, notebookName string) {
 	var wg sync.WaitGroup
-	wg.Add(2) // One for Gemini, one for Claude
+	wg.Add(3) // One for Gemini, one for Claude, one for Codex
 
 	// Run Gemini
 	go func() {
@@ -751,7 +780,13 @@ func executePromptTask(pe *PromptExecution, worktreePath, prompt, notebookName s
 		runLLMCommand(&pe.Claude, worktreePath, "claude", prompt)
 	}()
 
-	wg.Wait() // Wait for both LLM commands to complete
+	// Run Codex
+	go func() {
+		defer wg.Done()
+		runLLMCommand(&pe.Codex, worktreePath, "codex", prompt)
+	}()
+
+	wg.Wait() // Wait for all LLM commands to complete
 	log.Printf("All LLM commands for prompt execution %s completed.", notebookName)
 }
 
@@ -789,6 +824,7 @@ func apiRunPromptHandler(w http.ResponseWriter, r *http.Request) {
 	pe := &PromptExecution{
 		Gemini: LLMResponse{Status: "running"},
 		Claude: LLMResponse{Status: "running"},
+		Codex:  LLMResponse{Status: "running"},
 	}
 
 	promptExecutionsMu.Lock()
@@ -929,26 +965,32 @@ func apiSummarizeTaskHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Prepare responses for both Gemini and Claude
+	// Prepare responses for Gemini, Claude, and Codex
 	geminiResp := buildLLMResponseData(&pe.Gemini, r.Context())
 	claudeResp := buildLLMResponseData(&pe.Claude, r.Context())
+	codexResp := buildLLMResponseData(&pe.Codex, r.Context())
 
 	// Determine overall status for the prompt execution
 	overallStatus := "running"
-	if (pe.Gemini.Done && pe.Gemini.Status == "success") && (pe.Claude.Done && pe.Claude.Status == "success") {
+	if (pe.Gemini.Done && pe.Gemini.Status == "success") &&
+		(pe.Claude.Done && pe.Claude.Status == "success") &&
+		(pe.Codex.Done && pe.Codex.Status == "success") {
 		overallStatus = "success"
-	} else if (pe.Gemini.Done && pe.Gemini.Status == "error") || (pe.Claude.Done && pe.Claude.Status == "error") {
+	} else if (pe.Gemini.Done && pe.Gemini.Status == "error") ||
+		(pe.Claude.Done && pe.Claude.Status == "error") ||
+		(pe.Codex.Done && pe.Codex.Status == "error") {
 		overallStatus = "error"
-	} else if pe.Gemini.Done && pe.Claude.Done { // Both done, but not both success (at least one error)
+	} else if pe.Gemini.Done && pe.Claude.Done && pe.Codex.Done { // All done, but not all success (at least one error)
 		overallStatus = "error"
 	}
 
 	// Construct the full response for the client
 	resp := map[string]interface{}{
 		"taskId":        promptExecutionID,
-		"overallStatus": overallStatus, // Can be "running", "success", "error" based on both LLMs
+		"overallStatus": overallStatus, // Can be "running", "success", "error" based on all LLMs
 		"gemini":        geminiResp,
 		"claude":        claudeResp,
+		"codex":         codexResp,
 	}
 
 	json.NewEncoder(w).Encode(resp)
