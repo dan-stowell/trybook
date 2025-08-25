@@ -147,11 +147,25 @@ func runHandler(w http.ResponseWriter, r *http.Request, db *sql.DB, repoPath str
 	// Generate branch and worktree name
 	repoBaseName := filepath.Base(repoPath)
 	timestamp := time.Now().Format("2006-01-02")
-	commandWords := strings.Fields(command)
-	var ideaSlug string
-	if len(commandWords) > 0 {
-		ideaSlug = strings.Join(commandWords[:min(len(commandWords), 3)], "-")
+	// Generate ideaSlug using llm
+	llmCmd := exec.Command("llm", "--model", "openrouter/openai/gpt-oss-20b", "--system", "Please print a good 3-word branch name for this prompt. Separate words with hyphens. Print only the branch name.")
+	llmCmd.Stdin = strings.NewReader(command)
+	llmCmd.Env = os.Environ() // Inherit existing environment variables
+	llmCmd.Env = append(llmCmd.Env, "OPENROUTER_API_KEY="+os.Getenv("OPENROUTER_API_KEY"))
+	llmCmd.Env = append(llmCmd.Env, "OPENROUTER_KEY="+os.Getenv("OPENROUTER_KEY"))
+
+	llmOutputBytes, err := llmCmd.Output()
+	if err != nil {
+		log.Printf("Failed to get branch name from llm: %v", err)
+		http.Error(w, "Internal server error: failed to generate branch name", http.StatusInternalServerError)
+		return
 	}
+	ideaSlug := strings.TrimSpace(string(llmOutputBytes))
+	// Sanitize ideaSlug to be a valid branch name part (e.g., replace spaces with hyphens)
+	ideaSlug = strings.ReplaceAll(ideaSlug, " ", "-")
+	ideaSlug = strings.ReplaceAll(ideaSlug, "_", "-")
+	ideaSlug = strings.ToLower(ideaSlug) // Ensure lowercase
+
 	branchName := fmt.Sprintf("%s-%s-%s", repoBaseName, timestamp, ideaSlug)
 	worktreePath := filepath.Join(tryDir, "worktree", branchName)
 
