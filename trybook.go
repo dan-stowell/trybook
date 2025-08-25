@@ -75,12 +75,12 @@ const htmlContent = `
     </style>
 </head>
 <body>
-    <h1>trybook: {{.RepoName}}</h1>
+    <h1>trybook: {{.Title}}</h1>
     <div id="content">
         <pre id="output"></pre>
 
-        <h2>Worktrees</h2>
         {{if .Worktrees}}
+        <h2>Worktrees</h2>
         <ul>
             {{range .Worktrees}}
             <li>
@@ -88,7 +88,7 @@ const htmlContent = `
             </li>
             {{end}}
         </ul>
-        {{else}}
+        {{else if .RepoName}}
         <p>No worktrees found for this repository.</p>
         {{end}}
     </div>
