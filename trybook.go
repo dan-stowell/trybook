@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"flag" // Added flag import
 	"fmt"
 	"html/template"
 	"log"
