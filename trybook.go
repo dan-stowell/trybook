@@ -181,7 +181,9 @@ type LLMResponse struct {
 type PromptExecution struct {
 	mu sync.RWMutex // Protects fields of PromptExecution itself, e.g., overall completion or shared data
 	// Note: individual LLMResponse fields have their own mutexes.
-	Claude LLMResponse
+	Claude    LLMResponse
+	BazelQuery LLMResponse // New field for Bazel query output
+	BazelTest  LLMResponse // New field for Bazel test output
 }
 
 var (
@@ -228,6 +230,14 @@ const notebookHTML = `<!DOCTYPE html>
       </div>
     </template>
 
+    <template id="bazelResponseTemplate">
+      <div class="bazel-response-entry" style="margin-top: 1rem; padding: 0.5rem 1rem; border: 1px solid #C5CAE9; border-radius: 4px; background-color: #E8EAF6; text-align: left; position: relative;">
+        <div style="position: absolute; bottom: 0.5rem; right: 0.5rem; font-size: 0.75em; color: #5C6BC0; background-color: rgba(255, 255, 255, 0.7); padding: 0.2em 0.5em; border-radius: 3px;" class="bazel-title"></div>
+        <pre class="output-area" style="white-space: pre-wrap; font-family: monospace; text-align: left; margin: 0; padding-left: 0em;"></pre>
+        <pre class="raw-output-area" style="white-space: pre-wrap; font-family: monospace; text-align: left; margin: 0; background-color: #e0e0e0; padding: 0.5rem; border-radius: 4px; display: none; max-height: 200px; overflow-y: auto;"></pre>
+      </div>
+    </template>
+
     {{if .Error}}
     <p style="color: #b00020; font-size: 0.95rem; margin-top: 1rem; white-space: pre-wrap;">Error: {{.Error}}</p>
     {{end}}
@@ -246,9 +256,10 @@ const notebookHTML = `<!DOCTYPE html>
       const promptForm = document.getElementById('promptForm');
       const taskLogContainer = document.getElementById('taskLogContainer');
       const llmResponseTemplate = document.getElementById('llmResponseTemplate');
+      const bazelResponseTemplate = document.getElementById('bazelResponseTemplate');
 
       let isSubmitting = false; // Flag to prevent multiple submissions
-      // taskId -> {promptLogEntry, claudeUI: {llmResponseEntry, outputArea, rawOutputArea}, pollingIntervalId}
+      // taskId -> {promptLogEntry, claudeUI: {llmResponseEntry, outputArea, rawOutputArea}, bazelQueryUI, bazelTestUI, pollingIntervalId}
       const activeTasks = {};
 
       // Helper to create UI for a single LLM response
@@ -263,6 +274,18 @@ const notebookHTML = `<!DOCTYPE html>
         return { llmResponseEntry, outputArea, rawOutputArea };
       }
 
+      // Helper to create UI for a single Bazel response
+      function createBazelResponseUI(title) {
+        const bazelClone = document.importNode(bazelResponseTemplate.content, true);
+        const bazelResponseEntry = bazelClone.querySelector('.bazel-response-entry');
+        bazelResponseEntry.querySelector('.bazel-title').textContent = title;
+        const outputArea = bazelResponseEntry.querySelector('.output-area');
+        const rawOutputArea = bazelResponseEntry.querySelector('.raw-output-area');
+        taskLogContainer.append(bazelResponseEntry);
+
+        return { bazelResponseEntry, outputArea, rawOutputArea };
+      }
+
       function createTaskLogUI(promptText) {
         // Create prompt log entry
         const promptClone = document.importNode(promptLogTemplate.content, true);
@@ -272,8 +295,14 @@ const notebookHTML = `<!DOCTYPE html>
 
         // Create UI for Claude
         const claudeUI = createLLMResponseUI("Claude");
+        // Create UI for Bazel Query (initially hidden)
+        const bazelQueryUI = createBazelResponseUI("Bazel Query");
+        bazelQueryUI.bazelResponseEntry.style.display = 'none';
+        // Create UI for Bazel Test (initially hidden)
+        const bazelTestUI = createBazelResponseUI("Bazel Test");
+        bazelTestUI.bazelResponseEntry.style.display = 'none';
 
-        return { promptLogEntry, claudeUI };
+        return { promptLogEntry, claudeUI, bazelQueryUI, bazelTestUI };
       }
 
       function updateOutput(outputAreaElement, output) {
@@ -284,25 +313,52 @@ const notebookHTML = `<!DOCTYPE html>
         rawOutputAreaElement.textContent = output;
       }
 
-      function setLLMResponseStyle(llmResponseElement, statusType) {
+      function setLLMResponseStyle(element, statusType) {
+        let bgColor, borderColor;
         switch (statusType) {
           case 'running':
-            llmResponseElement.style.backgroundColor = '#fff3e0'; // Light orange background
-            llmResponseElement.style.borderColor = '#ff9800';   // Sharper orange border
+            bgColor = '#fff3e0'; // Light orange background
+            borderColor = '#ff9800';   // Sharper orange border
             break;
           case 'success':
-            llmResponseElement.style.backgroundColor = '#e8f5e9'; // Light green background
-            llmResponseElement.style.borderColor = '#4caf50';   // Sharper green border
+            bgColor = '#e8f5e9'; // Light green background
+            borderColor = '#4caf50';   // Sharper green border
             break;
           case 'error':
-            llmResponseElement.style.backgroundColor = '#ffebee'; // Light red background
-            llmResponseElement.style.borderColor = '#f44336';   // Sharper red border
+            bgColor = '#ffebee'; // Light red background
+            borderColor = '#f44336';   // Sharper red border
             break;
           default: // Default or initial state
-            llmResponseElement.style.backgroundColor = '#fcfcfc';
-            llmResponseElement.style.borderColor = '#ddd';
+            bgColor = '#fcfcfc';
+            borderColor = '#ddd';
             break;
         }
+        element.style.backgroundColor = bgColor;
+        element.style.borderColor = borderColor;
+      }
+
+      function setBazelResponseStyle(element, statusType) {
+        let bgColor, borderColor;
+        switch (statusType) {
+          case 'running':
+            bgColor = '#E3F2FD'; // Light blue background
+            borderColor = '#2196F3';   // Sharper blue border
+            break;
+          case 'success':
+            bgColor = '#e8f5e9'; // Light green background
+            borderColor = '#4caf50';   // Sharper green border
+            break;
+          case 'error':
+            bgColor = '#ffebee'; // Light red background
+            borderColor = '#f44336';   // Sharper red border
+            break;
+          default: // Default or initial state
+            bgColor = '#E8EAF6'; // Default light indigo
+            borderColor = '#C5CAE9';
+            break;
+        }
+        element.style.backgroundColor = bgColor;
+        element.style.borderColor = borderColor;
       }
 
       function enableForm() {
@@ -336,12 +392,37 @@ const notebookHTML = `<!DOCTYPE html>
           if (!response.ok) {
             console.error('Failed to fetch prompt execution summary:', data.error || 'Unknown error');
             updateOutput(promptExecUI.claudeUI.outputArea, 'Error fetching summary: ' + (data.error || 'Unknown error'));
+            // Also update Bazel UIs if they were active
+            if (promptExecUI.bazelQueryUI.bazelResponseEntry.style.display !== 'none') {
+                updateOutput(promptExecUI.bazelQueryUI.outputArea, 'Error fetching summary: ' + (data.error || 'Unknown error'));
+            }
+            if (promptExecUI.bazelTestUI.bazelResponseEntry.style.display !== 'none') {
+                updateOutput(promptExecUI.bazelTestUI.outputArea, 'Error fetching summary: ' + (data.error || 'Unknown error'));
+            }
           } else {
             // Update Claude UI
             const claudeData = data.claude;
             updateRawOutput(promptExecUI.claudeUI.rawOutputArea, claudeData.output || "");
             updateOutput(promptExecUI.claudeUI.outputArea, claudeData.summary || "No summary available yet.");
             setLLMResponseStyle(promptExecUI.claudeUI.llmResponseEntry, claudeData.status);
+
+            // Update Bazel Query UI if present
+            if (data.bazelQuery) {
+                const bazelQueryData = data.bazelQuery;
+                promptExecUI.bazelQueryUI.bazelResponseEntry.style.display = 'block'; // Show it
+                updateRawOutput(promptExecUI.bazelQueryUI.rawOutputArea, bazelQueryData.output || "");
+                updateOutput(promptExecUI.bazelQueryUI.outputArea, bazelQueryData.summary || "No summary available yet.");
+                setBazelResponseStyle(promptExecUI.bazelQueryUI.bazelResponseEntry, bazelQueryData.status);
+            }
+
+            // Update Bazel Test UI if present
+            if (data.bazelTest) {
+                const bazelTestData = data.bazelTest;
+                promptExecUI.bazelTestUI.bazelResponseEntry.style.display = 'block'; // Show it
+                updateRawOutput(promptExecUI.bazelTestUI.rawOutputArea, bazelTestData.output || "");
+                updateOutput(promptExecUI.bazelTestUI.outputArea, bazelTestData.summary || "No summary available yet.");
+                setBazelResponseStyle(promptExecUI.bazelTestUI.bazelResponseEntry, bazelTestData.status);
+            }
 
             // Check overall status to decide when to stop polling and enable form
             if (data.overallStatus === 'success' || data.overallStatus === 'error') {
@@ -354,6 +435,13 @@ const notebookHTML = `<!DOCTYPE html>
         } catch (error) {
           console.error('Summarization polling failed:', error.message);
           updateOutput(promptExecUI.claudeUI.outputArea, 'Summarization polling failed: ' + error.message);
+          // Also update Bazel UIs if they were active
+          if (promptExecUI.bazelQueryUI.bazelResponseEntry.style.display !== 'none') {
+              updateOutput(promptExecUI.bazelQueryUI.outputArea, 'Summarization polling failed: ' + error.message);
+          }
+          if (promptExecUI.bazelTestUI.bazelResponseEntry.style.display !== 'none') {
+              updateOutput(promptExecUI.bazelTestUI.outputArea, 'Summarization polling failed: ' + error.message);
+          }
           clearInterval(promptExecUI.pollingIntervalId);
           delete activeTasks[taskId];
           enableForm();
@@ -375,7 +463,7 @@ const notebookHTML = `<!DOCTYPE html>
 
         disableForm();
 
-        const newUI = createTaskLogUI(prompt); // Creates promptLogEntry, claudeUI
+        const newUI = createTaskLogUI(prompt); // Creates promptLogEntry, claudeUI, bazelQueryUI, bazelTestUI
         
         // Initialize Claude UI
         updateOutput(newUI.claudeUI.outputArea, "Starting Claude task...");
@@ -383,10 +471,23 @@ const notebookHTML = `<!DOCTYPE html>
         newUI.claudeUI.rawOutputArea.style.display = 'none'; // Ensure raw output is hidden initially
         setLLMResponseStyle(newUI.claudeUI.llmResponseEntry, 'running');
 
-        // Add event listeners to toggle raw output on click for the entire LLM response box
-        function addToggleClickListener(uiElement) {
-            uiElement.llmResponseEntry.style.cursor = 'pointer'; // Indicate it's clickable
-            uiElement.llmResponseEntry.addEventListener('click', function() {
+        // Initialize Bazel Query UI
+        updateOutput(newUI.bazelQueryUI.outputArea, "Waiting for Bazel query...");
+        updateRawOutput(newUI.bazelQueryUI.rawOutputArea, "No raw output yet.");
+        newUI.bazelQueryUI.rawOutputArea.style.display = 'none';
+        setBazelResponseStyle(newUI.bazelQueryUI.bazelResponseEntry, 'default');
+
+        // Initialize Bazel Test UI
+        updateOutput(newUI.bazelTestUI.outputArea, "Waiting for Bazel test...");
+        updateRawOutput(newUI.bazelTestUI.rawOutputArea, "No raw output yet.");
+        newUI.bazelTestUI.rawOutputArea.style.display = 'none';
+        setBazelResponseStyle(newUI.bazelTestUI.bazelResponseEntry, 'default');
+
+        // Add event listeners to toggle raw output on click for the entire LLM/Bazel response box
+        function addToggleClickListener(uiElement, isLLM = true) {
+            const entryElement = isLLM ? uiElement.llmResponseEntry : uiElement.bazelResponseEntry;
+            entryElement.style.cursor = 'pointer'; // Indicate it's clickable
+            entryElement.addEventListener('click', function() {
                 if (uiElement.rawOutputArea.style.display === 'none') {
                     uiElement.rawOutputArea.style.display = 'block';
                 } else {
@@ -394,7 +495,9 @@ const notebookHTML = `<!DOCTYPE html>
                 }
             });
         }
-        addToggleClickListener(newUI.claudeUI);
+        addToggleClickListener(newUI.claudeUI, true);
+        addToggleClickListener(newUI.bazelQueryUI, false);
+        addToggleClickListener(newUI.bazelTestUI, false);
 
         let taskId;
         try {
@@ -425,12 +528,16 @@ const notebookHTML = `<!DOCTYPE html>
           enableForm();
           newUI.promptLogEntry.remove();
           newUI.claudeUI.llmResponseEntry.remove();
+          newUI.bazelQueryUI.bazelResponseEntry.remove();
+          newUI.bazelTestUI.bazelResponseEntry.remove();
           return;
         }
 
         activeTasks[taskId] = {
           promptLogEntry: newUI.promptLogEntry,
           claudeUI: newUI.claudeUI,
+          bazelQueryUI: newUI.bazelQueryUI,
+          bazelTestUI: newUI.bazelTestUI,
           pollingIntervalId: null,
         };
 
@@ -644,23 +751,14 @@ func runCommandInWorktree(ctx context.Context, worktreePath, name string, arg ..
 	return stdout.String(), stderr.String(), nil
 }
 
-// runLLMSummary invokes the llm command with a summarization prompt for any given text.
+// runSummary invokes the llm command with a summarization prompt for any given text.
 // It uses the gpt-5-nano model and asks for a single-sentence summary.
-func runLLMSummary(ctx context.Context, textToSummarize string) (string, error) {
+func runSummary(ctx context.Context, textToSummarize string, systemPrompt string) (string, error) {
 	if textToSummarize == "" {
 		return "", nil // Nothing to summarize
 	}
 	log.Printf("Running llm for summary of text length %d", len(textToSummarize))
 
-	// Define the command to use 'llm' with 'gpt-5-nano' model and a summarization system prompt.
-	systemPrompt := `
-		This is the output from a coding agent.
-		Can you summarize the output in a single sentence?
-		The agent may still be thinking or reading files, in which case you can summarize what the agent has thought or done so far.
-		The agent may have provided a partial or complete answer to a question, in which case you should summarize that answer and ignore the thinking and tool use.
-		Agents may print diagnostic information such as 'Data collection disabled.' Please ignore diagnostic information in your summary.
-		If there is nothing worth summarizing, please responding 'Running...' or some other pithy response.
-	`
 	cmd := exec.CommandContext(ctx, "llm", "--model", "gpt-5-nano", "-s", systemPrompt)
 
 	// Set up stdin for the llm command to pass the textToSummarize
@@ -682,6 +780,30 @@ func runLLMSummary(ctx context.Context, textToSummarize string) (string, error) 
 		return "", fmt.Errorf("llm summarization failed: %w (output: %s)", err, string(out))
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// runLLMSummary invokes the llm command with a summarization prompt for LLM output.
+func runLLMSummary(ctx context.Context, textToSummarize string) (string, error) {
+	systemPrompt := `
+		This is the output from a coding agent.
+		Can you summarize the output in a single sentence?
+		The agent may still be thinking or reading files, in which case you can summarize what the agent has thought or done so far.
+		The agent may have provided a partial or complete answer to a question, in which case you should summarize that answer and ignore the thinking and tool use.
+		Agents may print diagnostic information such as 'Data collection disabled.' Please ignore diagnostic information in your summary.
+		If there is nothing worth summarizing, please responding 'Running...' or some other pithy response.
+	`
+	return runSummary(ctx, textToSummarize, systemPrompt)
+}
+
+// runBazelSummary invokes the llm command with a summarization prompt for Bazel output.
+func runBazelSummary(ctx context.Context, textToSummarize string) (string, error) {
+	systemPrompt := `
+		This is the output from a Bazel command (query or test).
+		Can you summarize the output in a single sentence?
+		Focus on the key results, such as the number of targets found, or the test results (e.g., "X tests passed, Y failed").
+		If there is nothing worth summarizing, please respond with a concise status like "Running..." or "No targets found."
+	`
+	return runSummary(ctx, textToSummarize, systemPrompt)
 }
 
 // runLLMCommand executes a single LLM command (gemini or claude) and updates the provided LLMResponse.
@@ -811,7 +933,8 @@ func runLLMCommand(llmResponse *LLMResponse, worktreePath, llmName, prompt strin
 // executePromptTask orchestrates the execution of multiple LLM commands for a single prompt.
 func executePromptTask(pe *PromptExecution, worktreePath, prompt, notebookName string) {
 	var wg sync.WaitGroup
-	wg.Add(1) // Only one for Claude
+	var wg sync.WaitGroup
+	wg.Add(1) // Always add for Claude
 
 	// Run Claude
 	go func() {
@@ -819,11 +942,141 @@ func executePromptTask(pe *PromptExecution, worktreePath, prompt, notebookName s
 		runLLMCommand(&pe.Claude, worktreePath, "claude", prompt)
 	}()
 
-	// Note: Gemini and Codex are not run for now. Their status will remain "running"
-	// until the overall status check determines they are not needed for completion.
+	// Check if the prompt is a "test <word>" command
+	if strings.HasPrefix(prompt, "test ") {
+		word := strings.TrimSpace(strings.TrimPrefix(prompt, "test "))
+		if word != "" {
+			wg.Add(2) // Add for Bazel Query and Bazel Test
 
-	wg.Wait() // Wait for Claude LLM command to complete
-	log.Printf("Claude LLM command for prompt execution %s completed.", notebookName)
+			go func() {
+				defer wg.Done()
+				runBazelQueryAndTest(&pe.BazelQuery, &pe.BazelTest, worktreePath, word, notebookName)
+			}()
+		}
+	}
+
+	wg.Wait() // Wait for all commands to complete
+	log.Printf("All commands for prompt execution %s completed.", notebookName)
+}
+
+// runBazelQueryAndTest executes a Bazel query and then Bazel tests if targets are found.
+func runBazelQueryAndTest(queryResp, testResp *LLMResponse, worktreePath, word, notebookName string) {
+	// Initialize query response
+	queryResp.mu.Lock()
+	queryResp.Status = "running"
+	queryResp.Output = ""
+	queryResp.Err = nil
+	queryResp.Done = false
+	queryResp.HasSummary = false
+	queryResp.Summary = ""
+	queryResp.mu.Unlock()
+
+	// Initialize test response
+	testResp.mu.Lock()
+	testResp.Status = "running"
+	testResp.Output = ""
+	testResp.Err = nil
+	testResp.Done = false
+	testResp.HasSummary = false
+	testResp.Summary = ""
+	testResp.mu.Unlock()
+
+	log.Printf("Running Bazel query for word '%s' in worktree %s", word, worktreePath)
+
+	// Determine TRYBOOK_DIR, ORG, REPO for bazel output_base and caches
+	trybookDir := workDir
+	parts := strings.Split(notebookName, "-") // Assuming notebookName is like owner-repo-date-random
+	orgRepo := strings.Join(parts[0:2], "/") // Reconstruct owner/repo
+	org := parts[0]
+	repo := parts[1]
+
+	bazelOutputBase := filepath.Join(trybookDir, org, repo)
+	bazelDiskCache := filepath.Join(trybookDir, "disk_cache")
+	bazelRepoCache := filepath.Join(trybookDir, "repository_cache")
+
+	// Ensure cache directories exist
+	os.MkdirAll(bazelDiskCache, 0o755)
+	os.MkdirAll(bazelRepoCache, 0o755)
+
+	// Bazel Query command
+	queryCmdArgs := []string{
+		"--output_base=" + bazelOutputBase,
+		"query",
+		fmt.Sprintf("filter('%s', tests(//...))", word),
+		"--disk_cache=" + bazelDiskCache,
+		"--repository_cache=" + bazelRepoCache,
+	}
+	queryCmd := exec.Command("bazel", queryCmdArgs...)
+	queryCmd.Dir = worktreePath
+	queryCmd.Env = os.Environ() // Inherit environment
+
+	queryOut, queryErr := queryCmd.CombinedOutput()
+
+	queryResp.mu.Lock()
+	queryResp.Output = strings.TrimSpace(string(queryOut))
+	queryResp.Done = true
+	if queryErr != nil {
+		queryResp.Err = queryErr
+		queryResp.Status = "error"
+		log.Printf("Bazel query failed: %v\nOutput:\n%s", queryErr, queryResp.Output)
+	} else {
+		queryResp.Status = "success"
+		log.Printf("Bazel query successful.\nOutput:\n%s", queryResp.Output)
+	}
+	queryResp.mu.Unlock()
+
+	// If query failed or found no targets, stop here for tests
+	if queryErr != nil || queryResp.Output == "" {
+		testResp.mu.Lock()
+		testResp.Status = "success" // No tests to run is a success for the test step
+		testResp.Output = "No Bazel test targets found or query failed."
+		testResp.Done = true
+		testResp.mu.Unlock()
+		return
+	}
+
+	// Extract targets from query output (one target per line)
+	targets := strings.Fields(queryResp.Output)
+	if len(targets) == 0 {
+		testResp.mu.Lock()
+		testResp.Status = "success"
+		testResp.Output = "Bazel query found no test targets."
+		testResp.Done = true
+		testResp.mu.Unlock()
+		return
+	}
+
+	log.Printf("Running Bazel test for targets: %v in worktree %s", targets, worktreePath)
+
+	// Bazel Test command
+	testCmdArgs := []string{
+		"--output_base=" + bazelOutputBase,
+		"test",
+	}
+	testCmdArgs = append(testCmdArgs, targets...)
+	testCmdArgs = append(testCmdArgs,
+		"--disk_cache="+bazelDiskCache,
+		"--repository_cache="+bazelRepoCache,
+	)
+
+	testCmd := exec.Command("bazel", testCmdArgs...)
+	testCmd.Dir = worktreePath
+	testCmd.Env = os.Environ() // Inherit environment
+
+	testOut, testErr := testCmd.CombinedOutput()
+
+	testResp.mu.Lock()
+	testResp.Output = strings.TrimSpace(string(testOut))
+	testResp.Done = true
+	if testErr != nil {
+		testResp.Err = testErr
+		testResp.Status = "error"
+		log.Printf("Bazel test failed: %v\nOutput:\n%s", testErr, testResp.Output)
+	} else {
+		testResp.Status = "success"
+		log.Printf("Bazel test successful.\nOutput:\n%s", testResp.Output)
+	}
+	testResp.mu.Unlock()
 }
 
 // apiRunPromptHandler starts a long-running prompt execution involving multiple LLMs.
@@ -858,7 +1111,9 @@ func apiRunPromptHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Initialize PromptExecution with separate LLMResponse structs
 	pe := &PromptExecution{
-		Claude: LLMResponse{Status: "running"},
+		Claude:    LLMResponse{Status: "running"},
+		BazelQuery: LLMResponse{Status: "running"}, // Initialize BazelQuery
+		BazelTest:  LLMResponse{Status: "running"},  // Initialize BazelTest
 	}
 
 	promptExecutionsMu.Lock()
@@ -883,13 +1138,22 @@ func buildLLMResponseData(llmResp *LLMResponse, ctx context.Context) map[string]
 	llmResp.mu.RUnlock()
 
 	var summary string
+	// Determine which summarization function to use based on the LLMResponse type
+	// This is a heuristic; a more robust solution might pass a type or a specific prompt.
+	var summaryFunc func(context.Context, string) (string, error)
+	if strings.Contains(llmResp.Summary, "Bazel") || strings.Contains(llmResp.Summary, "targets") { // Heuristic for Bazel
+		summaryFunc = runBazelSummary
+	} else {
+		summaryFunc = runLLMSummary
+	}
+
 	if cachedHasSummary {
 		summary = cachedSummary
 	} else if llmDone { // LLM is done, but summary not yet generated
 		if currentOutput != "" {
 			ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 			defer cancel()
-			s, err := runLLMSummary(ctx, currentOutput) // Using runLLMSummary for any text summarization
+			s, err := summaryFunc(ctx, currentOutput)
 			if err != nil {
 				log.Printf("Failed to generate final summary for LLM: %v", err)
 				summary = "Could not generate final summary."
@@ -908,7 +1172,7 @@ func buildLLMResponseData(llmResp *LLMResponse, ctx context.Context) map[string]
 		if currentOutput != "" {
 			ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 			defer cancel()
-			s, err := runLLMSummary(ctx, currentOutput)
+			s, err := summaryFunc(ctx, currentOutput)
 			if err != nil {
 				log.Printf("Failed to generate running summary for LLM: %v", err)
 				summary = "Could not generate summary."
@@ -1000,21 +1264,41 @@ func apiSummarizeTaskHandler(w http.ResponseWriter, r *http.Request) {
 	// Prepare response for Claude
 	claudeResp := buildLLMResponseData(&pe.Claude, r.Context())
 
-	// Determine overall status for the prompt execution (only based on Claude)
+	// Prepare response for Bazel Query
+	bazelQueryResp := buildLLMResponseData(&pe.BazelQuery, r.Context())
+
+	// Prepare response for Bazel Test
+	bazelTestResp := buildLLMResponseData(&pe.BazelTest, r.Context())
+
+	// Determine overall status for the prompt execution
+	// If it's a "test" prompt, overall status depends on BazelTest.
+	// Otherwise, it depends on Claude.
 	overallStatus := "running"
-	if pe.Claude.Done {
-		if pe.Claude.Status == "success" {
-			overallStatus = "success"
-		} else {
-			overallStatus = "error"
+	if strings.HasPrefix(r.FormValue("prompt"), "test ") { // Check original prompt to determine primary task
+		if pe.BazelTest.Done {
+			if pe.BazelTest.Status == "success" {
+				overallStatus = "success"
+			} else {
+				overallStatus = "error"
+			}
+		}
+	} else {
+		if pe.Claude.Done {
+			if pe.Claude.Status == "success" {
+				overallStatus = "success"
+			} else {
+				overallStatus = "error"
+			}
 		}
 	}
 
 	// Construct the full response for the client
 	resp := map[string]interface{}{
 		"taskId":        promptExecutionID,
-		"overallStatus": overallStatus, // Can be "running", "success", "error" based on Claude
+		"overallStatus": overallStatus, // Can be "running", "success", "error"
 		"claude":        claudeResp,
+		"bazelQuery":    bazelQueryResp,
+		"bazelTest":     bazelTestResp,
 	}
 
 	json.NewEncoder(w).Encode(resp)
