@@ -933,7 +933,6 @@ func runLLMCommand(llmResponse *LLMResponse, worktreePath, llmName, prompt strin
 // executePromptTask orchestrates the execution of multiple LLM commands for a single prompt.
 func executePromptTask(pe *PromptExecution, worktreePath, prompt, notebookName string) {
 	var wg sync.WaitGroup
-	var wg sync.WaitGroup
 	wg.Add(1) // Always add for Claude
 
 	// Run Claude
@@ -986,7 +985,6 @@ func runBazelQueryAndTest(queryResp, testResp *LLMResponse, worktreePath, word, 
 	// Determine TRYBOOK_DIR, ORG, REPO for bazel output_base and caches
 	trybookDir := workDir
 	parts := strings.Split(notebookName, "-") // Assuming notebookName is like owner-repo-date-random
-	orgRepo := strings.Join(parts[0:2], "/") // Reconstruct owner/repo
 	org := parts[0]
 	repo := parts[1]
 
