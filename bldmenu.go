@@ -103,7 +103,7 @@ const htmlTemplate = `
     {{else}}
         <h1>{{.ProjectName}}</h1>
     {{end}}
-    <p>{{.GitBranch}} ({{.GitCommit}})</p>
+    <p><i>{{.GitBranch}} ({{.GitCommit}})</i></p>
     <h2>Detected Build Files:</h2>
     {{if .BuildFiles}}
         <ul>
