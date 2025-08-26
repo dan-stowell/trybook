@@ -1,19 +1,20 @@
 package main
 
 import (
-	"bufio" // Added for streaming command output
 	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"html/template"
+	"io"
 	"log"
-	"math/rand"
 	"net/http"
 	"os"
+	"os/user"
+	"bufio" // Added for streaming command output
 	"os/exec"
 	"os/signal"
-	"os/user"
+	"math/rand"
 	"path/filepath"
 	"strings"
 	"sync" // Already present
@@ -147,33 +148,24 @@ const repoHTML = `<!DOCTYPE html>
 </html>
 `
 
-// LLMResponse holds the output, status, and summary for a single LLM execution.
-type LLMResponse struct {
-	mu         sync.RWMutex // Protects fields of this LLMResponse
-	Output     string       // Stores combined stdout/stderr
-	Status     string       // "running", "success", "error"
-	Done       bool         // if true, the LLM has finished processing (either success or error)
-	Err        error        // Stores the Go error if LLM failed
-	Summary    string       // Stores the one-time generated summary for this LLM
-	HasSummary bool         // Indicates if Summary has been generated
-}
-
-// PromptExecution represents the overall execution of a user prompt, involving multiple LLMs.
-type PromptExecution struct {
-	mu sync.RWMutex // Protects fields of PromptExecution itself, e.g., overall completion or shared data
-	// Note: individual LLMResponse fields have their own mutexes.
-	Gemini LLMResponse
-	Claude LLMResponse
+// Task represents a long-running gemini process.
+type Task struct {
+	mu     sync.RWMutex
+	output string // Stores combined stdout/stderr
+	status string // "running", "success", "error"
+	done   bool   // if true, the task has finished processing (either success or error)
+	err    error  // Stores the Go error if task failed
+	finalSummary string // Stores the one-time generated final summary
+	hasFinalSummary bool // Indicates if finalSummary has been generated
 }
 
 var (
-	// promptExecutions maps a prompt execution ID to its PromptExecution struct.
-	promptExecutions   = make(map[string]*PromptExecution)
-	promptExecutionsMu sync.RWMutex
+	tasks   = make(map[string]*Task)
+	tasksMu sync.RWMutex
 )
 
-// generatePromptExecutionID creates a unique ID for a prompt execution.
-func generatePromptExecutionID() string {
+// generateTaskID creates a unique ID for a task.
+func generateTaskID() string {
 	return fmt.Sprintf("%x", r.Int63())
 }
 
@@ -202,12 +194,10 @@ const notebookHTML = `<!DOCTYPE html>
       <div class="prompt-log-entry" style="margin-top: 1rem; padding: 0.5rem 1rem; border: 1px solid #64B5F6; border-radius: 4px; background-color: #E3F2FD; text-align: left; font-style: italic; color: #3F51B5; word-wrap: break-word;"></div>
     </template>
 
-    <template id="llmResponseTemplate">
-      <div class="llm-response-entry" style="margin-top: 1rem; padding: 0.5rem 1rem; border: 1px solid #ddd; border-radius: 4px; background-color: #fcfcfc; text-align: left; position: relative;">
-        <div style="font-weight: bold; margin-bottom: 0.5rem;" class="llm-title"></div>
-        <span class="toggle-raw-output" style="position: absolute; left: 0.5rem; top: 0.7rem; cursor: pointer; font-size: 0.8em; color: #666; transition: transform 0.2s; user-select: none; display: none;">▶</span>
-        <pre class="output-area" style="white-space: pre-wrap; font-family: monospace; text-align: left; margin: 0; padding-left: 1.2em;"></pre>
-        <pre class="raw-output-area" style="white-space: pre-wrap; font-family: monospace; text-align: left; margin: 0; background-color: #eee; padding: 0.5rem; border-radius: 4px; display: none; max-height: 200px; overflow-y: auto;"></pre>
+    <template id="taskLogTemplate">
+      <div class="task-log-entry" style="margin-top: 1rem; padding: 0.5rem 1rem; border: 1px solid #ddd; border-radius: 4px; background-color: #fcfcfc; text-align: left;">
+        <div class="status-message" style="margin-bottom: 0.5rem; color: #555;"></div>
+        <pre class="output-area" style="white-space: pre-wrap; font-family: monospace; text-align: left; margin: 0;"></pre>
       </div>
     </template>
 
@@ -228,24 +218,11 @@ const notebookHTML = `<!DOCTYPE html>
       const promptInput = document.getElementById('promptInput');
       const promptForm = document.getElementById('promptForm');
       const taskLogContainer = document.getElementById('taskLogContainer');
-      const llmResponseTemplate = document.getElementById('llmResponseTemplate');
+      const taskLogTemplate = document.getElementById('taskLogTemplate');
 
       let isSubmitting = false; // Flag to prevent multiple submissions
-      // taskId -> {promptLogEntry, geminiUI: {llmResponseEntry, outputArea, toggleButton, rawOutputArea}, claudeUI: {llmResponseEntry, outputArea, toggleButton, rawOutputArea}, pollingIntervalId}
+      // taskId -> {promptLogEntry, taskLogEntry, statusMessage, outputArea, pollingIntervalId}
       const activeTasks = {}; 
-
-      // Helper to create UI for a single LLM response
-      function createLLMResponseUI(llmName) {
-        const llmClone = document.importNode(llmResponseTemplate.content, true);
-        const llmResponseEntry = llmClone.querySelector('.llm-response-entry');
-        llmResponseEntry.querySelector('.llm-title').textContent = llmName;
-        const toggleButton = llmResponseEntry.querySelector('.toggle-raw-output');
-        const outputArea = llmResponseEntry.querySelector('.output-area');
-        const rawOutputArea = llmResponseEntry.querySelector('.raw-output-area');
-        taskLogContainer.append(llmResponseEntry);
-
-        return { llmResponseEntry, outputArea, toggleButton, rawOutputArea };
-      }
 
       function createTaskLogUI(promptText) {
         // Create prompt log entry
@@ -254,40 +231,42 @@ const notebookHTML = `<!DOCTYPE html>
         promptLogEntry.textContent = 'Prompt: "' + promptText + '"';
         taskLogContainer.append(promptLogEntry); // Append prompt box first
 
-        // Create UI for Gemini
-        const geminiUI = createLLMResponseUI("Gemini");
+        // Create task log entry
+        const taskClone = document.importNode(taskLogTemplate.content, true);
+        const taskLogEntry = taskClone.querySelector('.task-log-entry');
+        const statusMessage = taskLogEntry.querySelector('.status-message');
+        const outputArea = taskLogEntry.querySelector('.output-area');
+        taskLogContainer.append(taskLogEntry); // Append task box after prompt box
 
-        // Create UI for Claude
-        const claudeUI = createLLMResponseUI("Claude");
+        return { promptLogEntry, taskLogEntry, statusMessage, outputArea };
+      }
 
-        return { promptLogEntry, geminiUI, claudeUI };
+      function showStatus(statusMessageElement, message, isError = false) {
+        statusMessageElement.textContent = message;
+        statusMessageElement.style.color = isError ? '#b00020' : '#555';
       }
 
       function updateOutput(outputAreaElement, output) {
         outputAreaElement.textContent = output;
       }
 
-      function updateRawOutput(rawOutputAreaElement, output) {
-        rawOutputAreaElement.textContent = output;
-      }
-
-      function setLLMResponseStyle(llmResponseElement, statusType) {
+      function setTaskLogStyle(taskLogElement, statusType) {
         switch (statusType) {
           case 'running':
-            llmResponseElement.style.backgroundColor = '#fff3e0'; // Light orange background
-            llmResponseElement.style.borderColor = '#ff9800';   // Sharper orange border
+            taskLogElement.style.backgroundColor = '#fff3e0'; // Light orange background
+            taskLogElement.style.borderColor = '#ff9800';   // Sharper orange border
             break;
           case 'success':
-            llmResponseElement.style.backgroundColor = '#e8f5e9'; // Light green background
-            llmResponseElement.style.borderColor = '#4caf50';   // Sharper green border
+            taskLogElement.style.backgroundColor = '#e8f5e9'; // Light green background
+            taskLogElement.style.borderColor = '#4caf50';   // Sharper green border
             break;
           case 'error':
-            llmResponseElement.style.backgroundColor = '#ffebee'; // Light red background
-            llmResponseElement.style.borderColor = '#f44336';   // Sharper red border
+            taskLogElement.style.backgroundColor = '#ffebee'; // Light red background
+            taskLogElement.style.borderColor = '#f44336';   // Sharper red border
             break;
           default: // Default or initial state
-            llmResponseElement.style.backgroundColor = '#fcfcfc';
-            llmResponseElement.style.borderColor = '#ddd';
+            taskLogElement.style.backgroundColor = '#fcfcfc';
+            taskLogElement.style.borderColor = '#ddd';
             break;
         }
       }
@@ -306,9 +285,10 @@ const notebookHTML = `<!DOCTYPE html>
       }
 
       async function pollTask(taskId) {
-        const promptExecUI = activeTasks[taskId];
-        if (!promptExecUI) {
-          console.error('UI elements not found for prompt execution:', taskId);
+        const taskUI = activeTasks[taskId];
+        if (!taskUI) {
+          console.error('UI elements not found for task:', taskId);
+          // If pollingIntervalId exists, clear it before deleting
           if (activeTasks[taskId] && activeTasks[taskId].pollingIntervalId) {
             clearInterval(activeTasks[taskId].pollingIntervalId);
           }
@@ -320,48 +300,61 @@ const notebookHTML = `<!DOCTYPE html>
           const response = await fetch('/api/summarize-task/' + taskId);
           const data = await response.json();
 
+          let displayStatusMessage = '';
           if (!response.ok) {
-            console.error('Failed to fetch prompt execution summary:', data.error || 'Unknown error');
-            updateOutput(promptExecUI.geminiUI.outputArea, 'Error fetching summary: ' + (data.error || 'Unknown error'));
-            updateOutput(promptExecUI.claudeUI.outputArea, 'Error fetching summary: ' + (data.error || 'Unknown error'));
+            console.error('Failed to fetch task summary:', data.error || 'Unknown error');
+            displayStatusMessage = 'Could not fetch summary: ' + (data.error || 'Unknown error');
           } else {
-            // Update Gemini UI
-            const geminiData = data.gemini;
-            updateRawOutput(promptExecUI.geminiUI.rawOutputArea, geminiData.output || "");
-            if (geminiData.output && geminiData.output.trim() !== "") {
-              promptExecUI.geminiUI.toggleButton.style.display = 'inline-block';
-            } else {
-              promptExecUI.geminiUI.toggleButton.style.display = 'none';
-            }
-            updateOutput(promptExecUI.geminiUI.outputArea, geminiData.summary || "No summary available yet.");
-            setLLMResponseStyle(promptExecUI.geminiUI.llmResponseEntry, geminiData.status);
+            updateOutput(taskUI.outputArea, data.output);
 
-            // Update Claude UI
-            const claudeData = data.claude;
-            updateRawOutput(promptExecUI.claudeUI.rawOutputArea, claudeData.output || "");
-            if (claudeData.output && claudeData.output.trim() !== "") {
-              promptExecUI.claudeUI.toggleButton.style.display = 'inline-block';
-            } else {
-              promptExecUI.claudeUI.toggleButton.style.display = 'none';
-            }
-            updateOutput(promptExecUI.claudeUI.outputArea, claudeData.summary || "No summary available yet.");
-            setLLMResponseStyle(promptExecUI.claudeUI.llmResponseEntry, claudeData.status);
+            const hasSummary = data.summary && data.summary !== "No output available yet.";
 
-            // Check overall status to decide when to stop polling and enable form
-            if (data.overallStatus === 'success' || data.overallStatus === 'error') {
-              clearInterval(promptExecUI.pollingIntervalId);
-              delete activeTasks[taskId];
-              enableForm();
+            if (data.status === 'running') {
+                displayStatusMessage = "Running...";
+                if (hasSummary) {
+                    displayStatusMessage += " " + data.summary;
+                }
+            } else {
+                displayStatusMessage = data.statusMessage;
+                if (hasSummary) {
+                    displayStatusMessage += " " + data.summary;
+                }
             }
           }
 
+          switch (data.status) {
+            case 'running':
+              setTaskLogStyle(taskUI.taskLogEntry, 'running');
+              showStatus(taskUI.statusMessage, displayStatusMessage, false);
+              break;
+            case 'success':
+              setTaskLogStyle(taskUI.taskLogEntry, 'success');
+              showStatus(taskUI.statusMessage, displayStatusMessage, false);
+              clearInterval(taskUI.pollingIntervalId);
+              delete activeTasks[taskId]; // Remove from active tasks
+              enableForm(); // Re-enable form once this task is done
+              break;
+            case 'error':
+              setTaskLogStyle(taskUI.taskLogEntry, 'error');
+              showStatus(taskUI.statusMessage, displayStatusMessage, true);
+              clearInterval(taskUI.pollingIntervalId);
+              delete activeTasks[taskId]; // Remove from active tasks
+              enableForm(); // Re-enable form once this task is done
+              break;
+            default: // Fallback for unknown states
+              setTaskLogStyle(taskUI.taskLogEntry, 'default');
+              showStatus(taskUI.statusMessage, "Unknown task status: " + data.status, true);
+              clearInterval(taskUI.pollingIntervalId);
+              delete activeTasks[taskId]; // Remove from active tasks
+              enableForm(); // Re-enable form once this task is done
+          }
+
         } catch (error) {
-          console.error('Summarization polling failed:', error.message);
-          updateOutput(promptExecUI.geminiUI.outputArea, 'Summarization polling failed: ' + error.message);
-          updateOutput(promptExecUI.claudeUI.outputArea, 'Summarization polling failed: ' + error.message);
-          clearInterval(promptExecUI.pollingIntervalId);
-          delete activeTasks[taskId];
-          enableForm();
+          setTaskLogStyle(taskUI.taskLogEntry, 'error');
+          showStatus(taskUI.statusMessage, 'Summarization polling failed: ' + error.message, true);
+          clearInterval(taskUI.pollingIntervalId);
+          delete activeTasks[taskId]; // Remove from active tasks
+          enableForm(); // Re-enable form once this task is done
         }
       }
 
@@ -380,40 +373,9 @@ const notebookHTML = `<!DOCTYPE html>
 
         disableForm();
 
-        const newUI = createTaskLogUI(prompt); // Creates promptLogEntry, geminiUI, claudeUI
-        
-        // Initialize Gemini UI
-        updateOutput(newUI.geminiUI.outputArea, "Starting Gemini task...");
-        updateRawOutput(newUI.geminiUI.rawOutputArea, "No raw output yet.");
-        newUI.geminiUI.toggleButton.style.display = 'none';
-        newUI.geminiUI.toggleButton.style.transform = 'rotate(0deg)';
-        newUI.geminiUI.rawOutputArea.style.display = 'none';
-        setLLMResponseStyle(newUI.geminiUI.llmResponseEntry, 'running');
-
-        // Initialize Claude UI
-        updateOutput(newUI.claudeUI.outputArea, "Starting Claude task...");
-        updateRawOutput(newUI.claudeUI.rawOutputArea, "No raw output yet.");
-        newUI.claudeUI.toggleButton.style.display = 'none';
-        newUI.claudeUI.toggleButton.style.transform = 'rotate(0deg)';
-        newUI.claudeUI.rawOutputArea.style.display = 'none';
-        setLLMResponseStyle(newUI.claudeUI.llmResponseEntry, 'running');
-
-        // Add event listeners for the toggle buttons
-        function addToggleButtonListener(uiElement) {
-            uiElement.toggleButton.addEventListener('click', function() {
-                if (uiElement.rawOutputArea.style.display === 'none') {
-                    uiElement.rawOutputArea.style.display = 'block';
-                    uiElement.toggleButton.style.transform = 'rotate(90deg)';
-                    uiElement.toggleButton.style.color = '#333';
-                } else {
-                    uiElement.rawOutputArea.style.display = 'none';
-                    uiElement.toggleButton.style.transform = 'rotate(0deg)';
-                    uiElement.toggleButton.style.color = '#666';
-                }
-            });
-        }
-        addToggleButtonListener(newUI.geminiUI);
-        addToggleButtonListener(newUI.claudeUI);
+        const newUI = createTaskLogUI(prompt);
+        showStatus(newUI.statusMessage, "Starting task...");
+        setTaskLogStyle(newUI.taskLogEntry, 'running');
 
         let taskId;
         try {
@@ -428,41 +390,33 @@ const notebookHTML = `<!DOCTYPE html>
           }
           taskId = data.taskId;
         } catch (error) {
-          // If task couldn't even start, clean up both UI elements
-          const errorMessage = 'Error starting task: ' + error.message;
-          setLLMResponseStyle(newUI.geminiUI.llmResponseEntry, 'error');
-          updateOutput(newUI.geminiUI.outputArea, errorMessage);
-          setLLMResponseStyle(newUI.claudeUI.llmResponseEntry, 'error');
-          updateOutput(newUI.claudeUI.outputArea, errorMessage);
+          setTaskLogStyle(newUI.taskLogEntry, 'error');
+          showStatus(newUI.statusMessage, 'Error starting task: ' + error.message, true);
           enableForm();
+          // Remove both the prompt and task log entries if the task couldn't even start
           newUI.promptLogEntry.remove();
-          newUI.geminiUI.llmResponseEntry.remove();
-          newUI.claudeUI.llmResponseEntry.remove();
+          newUI.taskLogEntry.remove();
           return;
         }
 
         if (!taskId) {
-          const errorMessage = 'Error: Did not receive a task ID from server.';
-          updateOutput(newUI.geminiUI.outputArea, errorMessage);
-          updateOutput(newUI.claudeUI.outputArea, errorMessage);
+          showStatus(newUI.statusMessage, 'Error: Did not receive a task ID from server.', true);
           enableForm();
+          // Remove both entries if no task ID was received
           newUI.promptLogEntry.remove();
-          newUI.geminiUI.llmResponseEntry.remove();
-          newUI.claudeUI.llmResponseEntry.remove();
+          newUI.taskLogEntry.remove(); 
           return;
         }
 
         activeTasks[taskId] = {
           promptLogEntry: newUI.promptLogEntry,
-          geminiUI: newUI.geminiUI,
-          claudeUI: newUI.claudeUI,
+          taskLogEntry: newUI.taskLogEntry,
+          statusMessage: newUI.statusMessage,
+          outputArea: newUI.outputArea,
           pollingIntervalId: null,
         };
 
-        // Initial messages for polling status
-        updateOutput(newUI.geminiUI.outputArea, "Gemini task started, waiting for updates...");
-        updateOutput(newUI.claudeUI.outputArea, "Claude task started, waiting for updates...");
-        
+        showStatus(newUI.statusMessage, "Task started, waiting for updates...");
         pollTask(taskId);
         activeTasks[taskId].pollingIntervalId = setInterval(() => pollTask(taskId), 1000);
 
@@ -478,10 +432,10 @@ const notebookHTML = `<!DOCTYPE html>
 `
 
 var (
-	indexTmpl    = template.Must(template.New("index").Parse(indexHTML))
-	repoTmpl     = template.Must(template.New("repo").Parse(repoHTML))
+	indexTmpl   = template.Must(template.New("index").Parse(indexHTML))
+	repoTmpl    = template.Must(template.New("repo").Parse(repoHTML))
 	notebookTmpl = template.Must(template.New("notebook").Parse(notebookHTML))
-	workDir      string
+	workDir     string
 )
 
 type IndexData struct {
@@ -523,11 +477,11 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", indexHandler)
 	mux.HandleFunc("/api/search", apiSearchHandler)
-	mux.HandleFunc("/repo/", repoHandler)                           // Handle /repo/{owner}/{repo}
-	mux.HandleFunc("/create-notebook/", createNotebookHandler)      // POST /create-notebook/{owner}/{repo}
-	mux.HandleFunc("/notebook/", notebookHandler)                   // GET /notebook/{owner}/{repo}/{notebook_name}
-	mux.HandleFunc("/api/run-prompt/", apiRunPromptHandler)         // POST /api/run-prompt/{owner}/{repo}/{notebook_name}
-	mux.HandleFunc("/api/poll-task/", apiPollTaskHandler)           // GET /api/poll-task/{task_id}
+	mux.HandleFunc("/repo/", repoHandler)                 // Handle /repo/{owner}/{repo}
+	mux.HandleFunc("/create-notebook/", createNotebookHandler) // POST /create-notebook/{owner}/{repo}
+	mux.HandleFunc("/notebook/", notebookHandler)         // GET /notebook/{owner}/{repo}/{notebook_name}
+	mux.HandleFunc("/api/run-prompt/", apiRunPromptHandler) // POST /api/run-prompt/{owner}/{repo}/{notebook_name}
+	mux.HandleFunc("/api/poll-task/", apiPollTaskHandler)   // GET /api/poll-task/{task_id}
 	mux.HandleFunc("/api/summarize-task/", apiSummarizeTaskHandler) // GET /api/summarize-task/{task_id}
 
 	addr := "127.0.0.1:8080"
@@ -591,24 +545,45 @@ func runCommandInWorktree(ctx context.Context, worktreePath, name string, arg ..
 	return stdout.String(), stderr.String(), nil
 }
 
-// runLLMSummary invokes the llm command with a summarization prompt for any given text.
+// runGemini invokes the gemini command with the given prompt in the worktree.
+func runGemini(ctx context.Context, worktreePath, prompt string) (stdout, stderr string, err error) {
+	log.Printf("Running gemini for worktree %s with prompt: %s", worktreePath, prompt)
+	return runCommandInWorktree(ctx, worktreePath, "gemini", "--prompt", prompt)
+}
+
+// runGeminiStreaming starts the gemini command and returns pipes to its stdout and stderr.
+func runGeminiStreaming(ctx context.Context, worktreePath, prompt string) (*exec.Cmd, io.ReadCloser, io.ReadCloser, error) {
+	log.Printf("Streaming gemini for worktree %s with prompt: %s", worktreePath, prompt)
+	cmd := exec.CommandContext(ctx, "gemini", "--prompt", prompt)
+	cmd.Dir = worktreePath
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("getting stdout pipe: %w", err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("getting stderr pipe: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return nil, nil, nil, fmt.Errorf("starting gemini command: %w", err)
+	}
+
+	return cmd, stdout, stderr, nil
+}
+
+// runGeminiSummary invokes the llm command with a summarization prompt.
 // It uses the gpt-5-nano model and asks for a single-sentence summary.
-func runLLMSummary(ctx context.Context, textToSummarize string) (string, error) {
+func runGeminiSummary(ctx context.Context, textToSummarize string) (string, error) {
 	if textToSummarize == "" {
 		return "", nil // Nothing to summarize
 	}
 	log.Printf("Running llm for summary of text length %d", len(textToSummarize))
 
 	// Define the command to use 'llm' with 'gpt-5-nano' model and a summarization system prompt.
-	systemPrompt := `
-		This is the output from a coding agent.
-		Can you summarize the output in a single sentence?
-		The agent may still be thinking or reading files, in which case you can summarize what the agent has thought or done so far.
-		The agent may have provided a partial or complete answer to a question, in which case you should summarize that answer and ignore the thinking and tool use.
-		Agents may print diagnostic information such as 'Data collection disabled.' Please ignore diagnostic information in your summary.
-		If there is nothing worth summarizing, please responding 'Running...' or some other pithy response.
-	`
-	cmd := exec.CommandContext(ctx, "llm", "--model", "gpt-5-nano", "-s", systemPrompt)
+	cmd := exec.CommandContext(ctx, "llm", "--model", "gpt-5-nano", "-s", "Please summarize this answer in a single sentence.")
 
 	// Set up stdin for the llm command to pass the textToSummarize
 	cmd.Stdin = strings.NewReader(textToSummarize)
@@ -631,150 +606,8 @@ func runLLMSummary(ctx context.Context, textToSummarize string) (string, error) 
 	return strings.TrimSpace(string(out)), nil
 }
 
-// runLLMCommand executes a single LLM command (gemini or claude) and updates the provided LLMResponse.
-func runLLMCommand(llmResponse *LLMResponse, worktreePath, llmName, prompt string) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
-	llmResponse.mu.Lock()
-	llmResponse.Status = "running"
-	llmResponse.Output = ""
-	llmResponse.Err = nil
-	llmResponse.Done = false
-	llmResponse.HasSummary = false
-	llmResponse.Summary = ""
-	llmResponse.mu.Unlock()
-
-	log.Printf("Running %s for prompt in worktree %s", llmName, worktreePath)
-
-	var cmd *exec.Cmd
-	extraEnv := []string{"GIT_TERMINAL_PROMPT=0"}
-
-	switch llmName {
-	case "gemini":
-		cmd = exec.CommandContext(ctx, "gemini", "--prompt", prompt)
-	case "claude":
-		cmd = exec.CommandContext(ctx, "claude", "--print", prompt) // Assuming 'claude --print $PROMPT'
-		if anthropicKey := os.Getenv("ANTHROPIC_API_KEY"); anthropicKey != "" {
-			extraEnv = append(extraEnv, "ANTHROPIC_API_KEY="+anthropicKey)
-		}
-	default:
-		llmResponse.mu.Lock()
-		llmResponse.Err = fmt.Errorf("unknown LLM: %s", llmName)
-		llmResponse.Status = "error"
-		llmResponse.Done = true
-		llmResponse.mu.Unlock()
-		log.Printf("Unknown LLM specified: %s", llmName)
-		return
-	}
-
-	cmd.Dir = worktreePath
-	cmd.Env = append(os.Environ(), extraEnv...) // Append any extra environment variables
-
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		llmResponse.mu.Lock()
-		llmResponse.Err = fmt.Errorf("failed to get stdout pipe for %s: %w", llmName, err)
-		llmResponse.Status = "error"
-		llmResponse.Done = true
-		llmResponse.mu.Unlock()
-		log.Printf("%s command failed to get stdout pipe: %v", llmName, err)
-		return
-	}
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		llmResponse.mu.Lock()
-		llmResponse.Err = fmt.Errorf("failed to get stderr pipe for %s: %w", llmName, err)
-		llmResponse.Status = "error"
-		llmResponse.Done = true
-		llmResponse.mu.Unlock()
-		log.Printf("%s command failed to get stderr pipe: %v", llmName, err)
-		return
-	}
-
-	if err := cmd.Start(); err != nil {
-		llmResponse.mu.Lock()
-		llmResponse.Err = fmt.Errorf("failed to start %s command: %w", llmName, err)
-		llmResponse.Status = "error"
-		llmResponse.Done = true
-		llmResponse.mu.Unlock()
-		log.Printf("%s command failed to start: %v", llmName, err)
-		return
-	}
-
-	var wg sync.WaitGroup
-	wg.Add(2) // Two goroutines for stdout and stderr
-	var combinedOutputBuilder strings.Builder
-
-	// Goroutine to read stdout
-	go func() {
-		defer wg.Done()
-		scanner := bufio.NewScanner(stdoutPipe)
-		for scanner.Scan() {
-			line := scanner.Text()
-			combinedOutputBuilder.WriteString(line + "\n")
-		}
-		if err := scanner.Err(); err != nil {
-			log.Printf("Error reading stdout for %s: %v", llmName, err)
-		}
-	}()
-
-	// Goroutine to read stderr
-	go func() {
-		defer wg.Done()
-		scanner := bufio.NewScanner(stderrPipe)
-		for scanner.Scan() {
-			line := scanner.Text()
-			combinedOutputBuilder.WriteString(line + "\n")
-		}
-		if err := scanner.Err(); err != nil {
-			log.Printf("Error reading stderr for %s: %v", llmName, err)
-		}
-	}()
-
-	wg.Wait() // Wait for both readers to finish after pipes are closed
-
-	// Wait for the command to exit
-	execErr := cmd.Wait()
-
-	llmResponse.mu.Lock()
-	defer llmResponse.mu.Unlock()
-
-	llmResponse.Output = strings.TrimSpace(combinedOutputBuilder.String())
-	llmResponse.Done = true
-
-	if execErr != nil {
-		llmResponse.Err = execErr
-		llmResponse.Status = "error"
-		log.Printf("%s command finished with error: %v\nOutput:\n%s", llmName, execErr, llmResponse.Output)
-	} else {
-		llmResponse.Status = "success"
-		log.Printf("%s command finished successfully.\nOutput:\n%s", llmName, llmResponse.Output)
-	}
-}
-
-// executePromptTask orchestrates the execution of multiple LLM commands for a single prompt.
-func executePromptTask(pe *PromptExecution, worktreePath, prompt, notebookName string) {
-	var wg sync.WaitGroup
-	wg.Add(2) // One for Gemini, one for Claude
-
-	// Run Gemini
-	go func() {
-		defer wg.Done()
-		runLLMCommand(&pe.Gemini, worktreePath, "gemini", prompt)
-	}()
-
-	// Run Claude
-	go func() {
-		defer wg.Done()
-		runLLMCommand(&pe.Claude, worktreePath, "claude", prompt)
-	}()
-
-	wg.Wait() // Wait for both LLM commands to complete
-	log.Printf("All LLM commands for prompt execution %s completed.", notebookName)
-}
-
-// apiRunPromptHandler starts a long-running prompt execution involving multiple LLMs.
+// apiRunPromptHandler starts a long-running Gemini task.
 func apiRunPromptHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if r.Method != http.MethodPost {
@@ -802,87 +635,122 @@ func apiRunPromptHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	promptExecutionID := generatePromptExecutionID()
-
-	// Initialize PromptExecution with separate LLMResponse structs
-	pe := &PromptExecution{
-		Gemini: LLMResponse{Status: "running"},
-		Claude: LLMResponse{Status: "running"},
+	taskID := generateTaskID()
+	task := &Task{
+		output: "",
+		status: "running", // Initial status
+		done:   false,
 	}
 
-	promptExecutionsMu.Lock()
-	promptExecutions[promptExecutionID] = pe
-	promptExecutionsMu.Unlock()
+	tasksMu.Lock()
+	tasks[taskID] = task
+	tasksMu.Unlock()
 
-	go executePromptTask(pe, worktreePath, prompt, notebookName)
+	go executePromptTask(task, worktreePath, prompt, notebookName)
 
-	log.Printf("Started prompt execution %s for prompt on %s", promptExecutionID, notebookName)
-	json.NewEncoder(w).Encode(map[string]string{"taskId": promptExecutionID})
+	log.Printf("Started task %s for prompt on %s", taskID, notebookName)
+	json.NewEncoder(w).Encode(map[string]string{"taskId": taskID})
 }
 
-// buildLLMResponseData constructs a map containing the status, summary, and output for a single LLM.
-func buildLLMResponseData(llmResp *LLMResponse, ctx context.Context) map[string]interface{} {
-	llmResp.mu.RLock()
-	currentStatus := llmResp.Status
-	currentOutput := llmResp.Output
-	llmErr := llmResp.Err
-	llmDone := llmResp.Done
-	cachedSummary := llmResp.Summary
-	cachedHasSummary := llmResp.HasSummary
-	llmResp.mu.RUnlock()
+// executePromptTask runs the Gemini command and captures its output.
+func executePromptTask(task *Task, worktreePath, prompt, notebookName string) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	var summary string
-	if cachedHasSummary {
-		summary = cachedSummary
-	} else if llmDone { // LLM is done, but summary not yet generated
-		if currentOutput != "" {
-			ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-			defer cancel()
-			s, err := runLLMSummary(ctx, currentOutput) // Using runLLMSummary for any text summarization
-			if err != nil {
-				log.Printf("Failed to generate final summary for LLM: %v", err)
-				summary = "Could not generate final summary."
-			} else {
-				summary = s
-				// Cache the generated summary
-				llmResp.mu.Lock()
-				llmResp.Summary = summary
-				llmResp.HasSummary = true
-				llmResp.mu.Unlock()
-			}
-		} else {
-			summary = "No output available for final summary."
-		}
-	} else { // LLM is still running, generate a real-time summary
-		if currentOutput != "" {
-			ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-			defer cancel()
-			s, err := runLLMSummary(ctx, currentOutput)
-			if err != nil {
-				log.Printf("Failed to generate running summary for LLM: %v", err)
-				summary = "Could not generate summary."
-			} else {
-				summary = s
-			}
-		} else {
-			summary = "No output available yet."
-		}
+	task.mu.Lock()
+	task.status = "running" // Ensure status is explicitly set to running
+	task.mu.Unlock()
+
+	cmd := exec.CommandContext(ctx, "gemini", "--prompt", prompt)
+	cmd.Dir = worktreePath
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		task.mu.Lock()
+		task.err = fmt.Errorf("failed to get stdout pipe: %w", err)
+		task.status = "error"
+		task.done = true
+		task.mu.Unlock()
+		log.Printf("Gemini command for %s failed to get stdout pipe: %v", notebookName, err)
+		return
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		task.mu.Lock()
+		task.err = fmt.Errorf("failed to get stderr pipe: %w", err)
+		task.status = "error"
+		task.done = true
+		task.mu.Unlock()
+		log.Printf("Gemini command for %s failed to get stderr pipe: %v", notebookName, err)
+		return
 	}
 
-	data := map[string]interface{}{
-		"status":  currentStatus,
-		"summary": summary,
-		"output":  currentOutput,
-		"done":    llmDone,
+	if err := cmd.Start(); err != nil {
+		task.mu.Lock()
+		task.err = fmt.Errorf("failed to start gemini command: %w", err)
+		task.status = "error"
+		task.done = true
+		task.mu.Unlock()
+		log.Printf("Gemini command for %s failed to start: %v", notebookName, err)
+		return
 	}
-	if llmErr != nil {
-		data["error"] = llmErr.Error()
+
+	var wg sync.WaitGroup
+	wg.Add(2) // Two goroutines for stdout and stderr
+
+	// Goroutine to read stdout
+	go func() {
+		defer wg.Done()
+		scanner := bufio.NewScanner(stdoutPipe)
+		for scanner.Scan() {
+			line := scanner.Text()
+			task.mu.Lock()
+			task.output += line + "\n" // Append line by line
+			task.mu.Unlock()
+		}
+		if err := scanner.Err(); err != nil {
+			log.Printf("Error reading stdout for task %s: %v", notebookName, err)
+		}
+	}()
+
+	// Goroutine to read stderr
+	go func() {
+		defer wg.Done()
+		scanner := bufio.NewScanner(stderrPipe)
+		for scanner.Scan() {
+			line := scanner.Text()
+			task.mu.Lock()
+			task.output += line + "\n" // Append line by line
+			task.mu.Unlock()
+		}
+		if err := scanner.Err(); err != nil {
+			log.Printf("Error reading stderr for task %s: %v", notebookName, err)
+		}
+	}()
+
+	wg.Wait() // Wait for both readers to finish after pipes are closed
+
+	// Wait for the command to exit
+	err = cmd.Wait()
+
+	task.mu.Lock()
+	defer task.mu.Unlock() // Ensure unlock happens
+
+	task.output = strings.TrimSpace(task.output) // Trim after all output is collected
+	task.done = true
+
+	if err != nil {
+		task.err = err
+		task.status = "error"
+		log.Printf("Gemini command for %s finished with error: %v\nOutput:\n%s", notebookName, err, task.output)
+	} else {
+		task.status = "success"
+		log.Printf("Gemini command for %s finished successfully.\nOutput:\n%s", notebookName, task.output)
 	}
-	return data
 }
 
 // apiPollTaskHandler returns the current status and output of a task.
-// This handler is less detailed than apiSummarizeTaskHandler and primarily shows Gemini's state.
 func apiPollTaskHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if r.Method != http.MethodGet {
@@ -895,36 +763,33 @@ func apiPollTaskHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error": "Invalid API URL"}`, http.StatusBadRequest)
 		return
 	}
-	promptExecutionID := parts[3]
+	taskID := parts[3]
 
-	promptExecutionsMu.RLock()
-	pe, ok := promptExecutions[promptExecutionID]
-	promptExecutionsMu.RUnlock()
+	tasksMu.RLock()
+	task, ok := tasks[taskID]
+	tasksMu.RUnlock()
 
 	if !ok {
-		http.Error(w, `{"error": "Prompt execution not found"}`, http.StatusNotFound)
+		http.Error(w, `{"error": "Task not found"}`, http.StatusNotFound)
 		return
 	}
 
-	// For apiPollTaskHandler, we'll return a combined status/output for simplicity,
-	// or indicate that it's deprecated in favor of summarize-task if this becomes complex.
-	// For now, let's just show Gemini's status as the "overall" for this legacy endpoint.
-	pe.Gemini.mu.RLock()
+	task.mu.RLock()
 	resp := map[string]interface{}{
-		"taskId": promptExecutionID,
-		"status": pe.Gemini.Status, // Report Gemini's status as primary
-		"output": pe.Gemini.Output, // Report Gemini's output as primary
-		"done":   pe.Gemini.Done,   // Report Gemini's done status
+		"taskId": taskID,
+		"status": task.status,
+		"output": task.output,
+		"done":   task.done,
 	}
-	if pe.Gemini.Err != nil {
-		resp["error"] = pe.Gemini.Err.Error()
+	if task.err != nil {
+		resp["error"] = task.err.Error()
 	}
-	pe.Gemini.mu.RUnlock()
+	task.mu.RUnlock()
 
 	json.NewEncoder(w).Encode(resp)
 }
 
-// apiSummarizeTaskHandler returns summaries of both LLMs for a prompt execution.
+// apiSummarizeTaskHandler returns a summary of a task's status and output.
 func apiSummarizeTaskHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if r.Method != http.MethodGet {
@@ -937,41 +802,94 @@ func apiSummarizeTaskHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error": "Invalid API URL"}`, http.StatusBadRequest)
 		return
 	}
-	promptExecutionID := parts[3]
+	taskID := parts[3]
 
-	promptExecutionsMu.RLock()
-	pe, ok := promptExecutions[promptExecutionID]
-	promptExecutionsMu.RUnlock()
+	tasksMu.RLock()
+	task, ok := tasks[taskID]
+	tasksMu.RUnlock()
 
 	if !ok {
-		http.Error(w, `{"error": "Prompt execution not found"}`, http.StatusNotFound)
+		http.Error(w, `{"error": "Task not found"}`, http.StatusNotFound)
 		return
 	}
 
-	// Prepare responses for both Gemini and Claude
-	geminiResp := buildLLMResponseData(&pe.Gemini, r.Context())
-	claudeResp := buildLLMResponseData(&pe.Claude, r.Context())
+	task.mu.RLock()
+	currentStatus := task.status
+	currentOutput := task.output
+	taskErr := task.err
+	taskDone := task.done
+	cachedFinalSummary := task.finalSummary
+	cachedHasFinalSummary := task.hasFinalSummary
+	task.mu.RUnlock()
 
-	// Determine overall status for the prompt execution
-	overallStatus := "running"
-	if (pe.Gemini.Done && pe.Gemini.Status == "success") && (pe.Claude.Done && pe.Claude.Status == "success") {
-		overallStatus = "success"
-	} else if (pe.Gemini.Done && pe.Gemini.Status == "error") || (pe.Claude.Done && pe.Claude.Status == "error") {
-		overallStatus = "error"
-	} else if pe.Gemini.Done && pe.Claude.Done { // Both done, but not both success (at least one error)
-		overallStatus = "error"
+	var summary string
+	if cachedHasFinalSummary {
+		summary = cachedFinalSummary // Use cached summary if already generated
+	} else if taskDone { // Task is done, but final summary not yet generated
+		if currentOutput != "" {
+			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+			defer cancel()
+			s, err := runGeminiSummary(ctx, currentOutput)
+			if err != nil {
+				log.Printf("Failed to generate final summary for task %s: %v", taskID, err)
+				summary = "Could not generate final summary."
+			} else {
+				summary = s
+				// Cache the generated summary for future requests
+				task.mu.Lock()
+				task.finalSummary = summary
+				task.hasFinalSummary = true
+				task.mu.Unlock()
+			}
+		} else {
+			summary = "No output available for final summary."
+		}
+	} else { // Task is still running, generate a real-time summary
+		if currentOutput != "" {
+			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second) // Give LLM some time
+			defer cancel()
+			s, err := runGeminiSummary(ctx, currentOutput)
+			if err != nil {
+				log.Printf("Failed to generate running summary for task %s: %v", taskID, err)
+				summary = "Could not generate summary." // Fallback summary
+			} else {
+				summary = s
+			}
+		} else {
+			summary = "No output available yet."
+		}
 	}
 
-	// Construct the full response for the client
+    // Determine overall message based on status for a single sentence summary
+    var statusMessage string
+    switch currentStatus {
+    case "running":
+        statusMessage = "Task is currently running."
+    case "success":
+        statusMessage = "Task completed successfully."
+    case "error":
+        statusMessage = "Task exited with an error."
+        if taskErr != nil {
+            statusMessage = fmt.Sprintf("Task exited with an error: %v", taskErr.Error())
+        }
+    default:
+        statusMessage = "Task status is unknown."
+    }
+
 	resp := map[string]interface{}{
-		"taskId":        promptExecutionID,
-		"overallStatus": overallStatus, // Can be "running", "success", "error" based on both LLMs
-		"gemini":        geminiResp,
-		"claude":        claudeResp,
+		"taskId": taskID,
+		"status": currentStatus,
+		"statusMessage": statusMessage,
+		"summary": summary,
+		"output": currentOutput, // Add raw output to the response
+	}
+	if taskErr != nil {
+		resp["error"] = taskErr.Error()
 	}
 
 	json.NewEncoder(w).Encode(resp)
 }
+
 
 // getHeadCommit returns the SHA of the HEAD commit in the given repo directory.
 func getHeadCommit(ctx context.Context, repoDir string) (string, error) {
@@ -1214,10 +1132,11 @@ func parseGitHubInput(s string) (string, string, error) {
 	return owner, repo, nil
 }
 
+
 type Repo struct {
-	FullName        string `json:"fullName"`
-	Description     string `json:"description"`
-	URL             string `json:"url"`
+	FullName       string `json:"fullName"`
+	Description    string `json:"description"`
+	URL            string `json:"url"`
 	StargazersCount int    `json:"stargazersCount"`
 }
 
@@ -1282,3 +1201,4 @@ func logRequest(next http.Handler) http.Handler {
 		log.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(start))
 	})
 }
+
