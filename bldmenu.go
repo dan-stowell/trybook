@@ -48,17 +48,16 @@ func getGitInfo() (projectName, branch, commit, githubURL string) {
 		remoteURL := strings.TrimSpace(string(output))
 		// Attempt to parse GitHub URL
 		if strings.Contains(remoteURL, "github.com/") {
-			// Normalize URL to HTTPS for easier parsing
-			if strings.HasPrefix(remoteURL, "git@github.com:") {
-				remoteURL = "https://github.com/" + strings.TrimPrefix(remoteURL, "git@github.com:")
-			}
-			remoteURL = strings.TrimSuffix(remoteURL, ".git")
-
-			// Extract owner/repo from the URL
-			parts := strings.Split(remoteURL, "github.com/")
-			if len(parts) > 1 {
-				repoPath := parts[1]
-				githubURL = fmt.Sprintf("https://github.com/%s/commit/%s", repoPath, commit)
+			// Extract owner/repo from the URL and construct the GitHub commit URL
+			if strings.Contains(remoteURL, "github.com/") {
+				// Find the part after "github.com/"
+				parts := strings.SplitN(remoteURL, "github.com/", 2)
+				if len(parts) > 1 {
+					repoPath := parts[1]
+					// Remove .git suffix if present
+					repoPath = strings.TrimSuffix(repoPath, ".git")
+					githubURL = fmt.Sprintf("https://github.com/%s/commit/%s", repoPath, commit)
+				}
 			}
 		}
 	}
