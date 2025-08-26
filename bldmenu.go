@@ -16,11 +16,12 @@ type ProjectInfo struct {
 	ProjectName string
 	GitBranch   string
 	GitCommit   string
+	GitHubURL   string // New field for GitHub commit URL
 	BuildFiles  map[string][]string
 }
 
-// getGitInfo retrieves the project name, current Git branch, and commit hash.
-func getGitInfo() (projectName, branch, commit string) {
+// getGitInfo retrieves the project name, current Git branch, commit hash, and GitHub URL.
+func getGitInfo() (projectName, branch, commit, githubURL string) {
 	// Get project name from current directory
 	wd, err := os.Getwd()
 	if err == nil {
@@ -39,6 +40,24 @@ func getGitInfo() (projectName, branch, commit string) {
 	output, err = cmd.Output()
 	if err == nil {
 		commit = strings.TrimSpace(string(output))
+	}
+	// Get Git remote origin URL
+	cmd = exec.Command("git", "config", "--get", "remote.origin.url")
+	output, err = cmd.Output()
+	if err == nil {
+		remoteURL := strings.TrimSpace(string(output))
+		// Attempt to parse GitHub URL
+		if strings.Contains(remoteURL, "github.com/") {
+			// Handle both https and ssh formats
+			if strings.HasPrefix(remoteURL, "git@") {
+				remoteURL = strings.TrimPrefix(remoteURL, "git@github.com:")
+				remoteURL = strings.TrimSuffix(remoteURL, ".git")
+				githubURL = "https://github.com/" + remoteURL + "/commit/" + commit
+			} else if strings.HasPrefix(remoteURL, "https://") {
+				remoteURL = strings.TrimSuffix(remoteURL, ".git")
+				githubURL = remoteURL + "/commit/" + commit
+			}
+		}
 	}
 	return
 }
@@ -77,8 +96,13 @@ const htmlTemplate = `
 </head>
 <body>
     <h1>{{.ProjectName}}</h1>
-    <p><strong>Git Branch:</strong> {{.GitBranch}}</p>
-    <p><strong>Git Commit:</strong> {{.GitCommit}}</p>
+    <p><strong>Git:</strong> {{.GitBranch}}
+    {{if .GitHubURL}}
+        (<a href="{{.GitHubURL}}" target="_blank">{{.GitCommit}}</a>)
+    {{else}}
+        ({{.GitCommit}})
+    {{end}}
+    </p>
     <h2>Detected Build Files:</h2>
     {{if .BuildFiles}}
         <ul>
@@ -162,7 +186,7 @@ func main() {
 		}
 	}
 
-	projectName, gitBranch, gitCommit := getGitInfo()
+	projectName, gitBranch, gitCommit, githubURL := getGitInfo()
 
 	tmpl, err := template.New("bldmenu").Parse(htmlTemplate)
 	if err != nil {
@@ -174,6 +198,7 @@ func main() {
 		ProjectName: projectName,
 		GitBranch:   gitBranch,
 		GitCommit:   gitCommit,
+		GitHubURL:   githubURL,
 		BuildFiles:  foundFiles,
 	}
 
