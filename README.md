@@ -1,2 +1,2 @@
-# trybook
-notebooks for entire repos
+# menu
+menu of things to build and test in this repo
