@@ -8,27 +8,27 @@ import (
 
 // buildFilePatterns maps build system names to a list of their common file patterns.
 var buildFilePatterns = map[string][]string{
+	"Node.js":   {"package.json"}, // yarn.lock, pnpm-lock.yaml can also indicate, but package.json is primary
+	"Python":    {"pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "poetry.lock", "hatch.toml"},
 	"Bazel":     {"MODULE.bazel", "WORKSPACE.bazel", "WORKSPACE", ".bazelrc"},
+	"Go":        {"go.mod"},
+	"Rust":      {"Cargo.toml"},
+	"Gradle (Java)": {"gradlew", "build.gradle", "build.gradle.kts"},
+	"Maven (Java)": {"pom.xml"},
+	"CMake":     {"CMakeLists.txt"},
+	"Autotools": {"configure.ac", "configure.in", "Makefile.am"},
+	"Docker":    {"Dockerfile", "docker/Dockerfile"},
+	"Make":      {"Makefile", "makefile", "GNUmakefile"},
 	"Pants":     {"pants.toml", "pants.ini"},
 	"Buck":      {".buckconfig"},
-	"CMake":     {"CMakeLists.txt"},
 	"Ninja":     {"build.ninja"},
 	"Meson":     {"meson.build"},
-	"Autotools": {"configure.ac", "configure.in", "Makefile.am"},
-	"Make":      {"Makefile", "makefile", "GNUmakefile"},
 	"SCons":     {"SConstruct", "sconstruct"},
-	"Maven (Java)": {"pom.xml"},
-	"Gradle (Java)": {"gradlew", "build.gradle", "build.gradle.kts"},
-	"Node.js":   {"package.json"}, // yarn.lock, pnpm-lock.yaml can also indicate, but package.json is primary
-	"Rust":      {"Cargo.toml"},
-	"Go":        {"go.mod"},
-	"Python":    {"pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "poetry.lock", "hatch.toml"},
 	"Swift":     {"Package.swift"},
 	"Zig":       {"build.zig"},
 	"Haskell":   {"stack.yaml"}, // *.cabal can also indicate
 	".NET":      {".sln", ".csproj"},
 	"Nix":       {"flake.nix", "default.nix"},
-	"Docker":    {"Dockerfile", "docker/Dockerfile"},
 	"Just":      {"Justfile"},
 	"Task":      {"Taskfile.yml"},
 }
