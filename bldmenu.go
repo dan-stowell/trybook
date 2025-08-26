@@ -58,7 +58,7 @@ func getGitInfo() (projectName, branch, commit, githubURL string) {
 				repoPath := parts[1]
 				// Remove .git suffix if present
 				repoPath = strings.TrimSuffix(repoPath, ".git")
-				githubURL = fmt.Sprintf("https://github.com/%s/commit/%s", repoPath, commit)
+				githubURL = fmt.Sprintf("https://github.com/%s", repoPath)
 			}
 		}
 	}
@@ -98,14 +98,12 @@ const htmlTemplate = `
     </style>
 </head>
 <body>
-    <h1>{{.ProjectName}}</h1>
-    <p>
     {{if .GitHubURL}}
-        <a href="{{.GitHubURL}}" target="_blank">{{.GitBranch}} ({{.GitCommit}})</a>
+        <h1><a href="{{.GitHubURL}}" target="_blank">{{.ProjectName}}</a></h1>
     {{else}}
-        {{.GitBranch}} ({{.GitCommit}})
+        <h1>{{.ProjectName}}</h1>
     {{end}}
-    </p>
+    <p>{{.GitBranch}} ({{.GitCommit}})</p>
     <h2>Detected Build Files:</h2>
     {{if .BuildFiles}}
         <ul>
