@@ -864,13 +864,7 @@ func runLLMCommand(llmResponse *LLMResponse, worktreePath, llmName, prompt strin
 // executePromptTask orchestrates the execution of multiple LLM commands for a single prompt.
 func executePromptTask(pe *PromptExecution, worktreePath, prompt, notebookName string) {
 	var wg sync.WaitGroup
-	wg.Add(3) // One for Gemini, one for Claude, one for Codex
-
-	// Run Gemini
-	go func() {
-		defer wg.Done()
-		runLLMCommand(&pe.Gemini, worktreePath, "gemini", prompt)
-	}()
+	wg.Add(1) // Only one for Claude
 
 	// Run Claude
 	go func() {
@@ -878,14 +872,11 @@ func executePromptTask(pe *PromptExecution, worktreePath, prompt, notebookName s
 		runLLMCommand(&pe.Claude, worktreePath, "claude", prompt)
 	}()
 
-	// Run Codex
-	go func() {
-		defer wg.Done()
-		runLLMCommand(&pe.Codex, worktreePath, "codex", prompt)
-	}()
+	// Note: Gemini and Codex are not run for now. Their status will remain "running"
+	// until the overall status check determines they are not needed for completion.
 
-	wg.Wait() // Wait for all LLM commands to complete
-	log.Printf("All LLM commands for prompt execution %s completed.", notebookName)
+	wg.Wait() // Wait for Claude LLM command to complete
+	log.Printf("Claude LLM command for prompt execution %s completed.", notebookName)
 }
 
 // apiRunPromptHandler starts a long-running prompt execution involving multiple LLMs.
