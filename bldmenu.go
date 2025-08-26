@@ -17,7 +17,7 @@ type ProjectInfo struct {
 	GitBranch           string
 	GitCommit           string
 	GitHubURL           string // New field for GitHub commit URL
-	SuggestedBuildCommand string
+	SuggestedBuildCommands []string
 }
 
 // getGitInfo retrieves the project name, current Git branch, commit hash, and GitHub URL.
@@ -104,12 +104,16 @@ const htmlTemplate = `
         <h1>{{.ProjectName}}</h1>
     {{end}}
     <p><i>{{.GitBranch}} ({{.GitCommit}})</i></p>
-    {{if .SuggestedBuildCommand}}
-        <button onclick="copyToClipboard('{{.SuggestedBuildCommand}}')" style="font-size: 2em; padding: 20px 40px; cursor: pointer;">
-            {{.SuggestedBuildCommand}}
-        </button>
+    {{if .SuggestedBuildCommands}}
+        {{range .SuggestedBuildCommands}}
+            <button onclick="copyToClipboard('{{.}}')" style="font-size: 2em; padding: 20px 40px; cursor: pointer; margin-bottom: 10px;">
+                {{.}}
+            </button>
+            <br>
+        {{end}}
+        <p>(Click to copy)</p>
     {{else}}
-        <p>No suggested build command found.</p>
+        <p>No suggested build commands found.</p>
     {{end}}
 
     <script>
@@ -155,12 +159,12 @@ var buildFilePatterns = map[string]struct {
 	"Task":          {Files: []string{"Taskfile.yml"}, Command: "task build"},
 }
 
-// getSuggestedBuildCommand checks for the presence of build files and returns a suggested command.
-func getSuggestedBuildCommand(rootDir string) string {
+// getSuggestedBuildCommands checks for the presence of build files and returns a slice of suggested commands.
+func getSuggestedBuildCommands(rootDir string) []string {
 	files, err := os.ReadDir(rootDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading current directory for build command suggestion: %v\n", err)
-		return ""
+		return nil
 	}
 
 	fileNames := make(map[string]bool)
@@ -170,21 +174,24 @@ func getSuggestedBuildCommand(rootDir string) string {
 		}
 	}
 
+	var commands []string
 	for system, info := range buildFilePatterns {
 		for _, pattern := range info.Files {
 			if strings.HasPrefix(pattern, "*.") {
 				suffix := strings.TrimPrefix(pattern, "*")
 				for fileName := range fileNames {
 					if strings.HasSuffix(fileName, suffix) {
-						return fmt.Sprintf("build (%s): %s", system, info.Command)
+						commands = append(commands, fmt.Sprintf("build (%s): %s", system, info.Command))
+						break // Found a match for this system, move to next system
 					}
 				}
 			} else if fileNames[pattern] {
-				return fmt.Sprintf("build (%s): %s", system, info.Command)
+				commands = append(commands, fmt.Sprintf("build (%s): %s", system, info.Command))
+				break // Found a match for this system, move to next system
 			}
 		}
 	}
-	return ""
+	return commands
 }
 
 func main() {
@@ -195,7 +202,7 @@ func main() {
 	}
 
 	projectName, gitBranch, gitCommit, githubURL := getGitInfo()
-	suggestedBuildCommand := getSuggestedBuildCommand(rootDir)
+	suggestedBuildCommands := getSuggestedBuildCommands(rootDir)
 
 	tmpl, err := template.New("bldmenu").Parse(htmlTemplate)
 	if err != nil {
@@ -208,7 +215,7 @@ func main() {
 		GitBranch:           gitBranch,
 		GitCommit:           gitCommit,
 		GitHubURL:           githubURL,
-		SuggestedBuildCommand: suggestedBuildCommand,
+		SuggestedBuildCommands: suggestedBuildCommands,
 	}
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
