@@ -42,6 +42,12 @@ const indexHTML = `<!DOCTYPE html>
   .sugg-item:hover { background: #f7f7f7; }
   .sugg-title { font-weight: 600; }
   .sugg-desc { color: #555; font-size: 0.9rem; }
+  .notebook-list { margin-top: 1rem; max-width: 40rem; }
+  .notebook-list h2 { font-size: 1.2rem; margin-bottom: 0.5rem; }
+  .notebook-list ul { list-style: none; padding: 0; }
+  .notebook-list li { margin-bottom: 0.25rem; }
+  .notebook-list a { text-decoration: none; color: #007bff; }
+  .notebook-list a:hover { text-decoration: underline; }
 </style>
 </head>
 <body style="padding: 1rem; text-align: left;">
@@ -61,6 +67,19 @@ const indexHTML = `<!DOCTYPE html>
     {{if .Result}}
     <p style="color: #0a7; font-size: 0.95rem; margin-top: 1rem; white-space: pre-wrap;">{{.Result}}</p>
     {{end}}
+
+    <div class="notebook-list">
+      <h2>Existing Notebooks</h2>
+      {{if .Notebooks}}
+      <ul>
+        {{range .Notebooks}}
+        <li><a href="/notebook/{{.Owner}}/{{.Repo}}/{{.Name}}">{{.RepoName}} / {{.Name}}</a></li>
+        {{end}}
+      </ul>
+      {{else}}
+      <p>No notebooks found.</p>
+      {{end}}
+    </div>
   </div>
 <script>
 (function(){
@@ -492,10 +511,19 @@ var (
 	workDir      string
 )
 
+// Notebook represents a single existing notebook (worktree).
+type Notebook struct {
+	Owner    string
+	Repo     string
+	RepoName string // owner/repo
+	Name     string // notebook_name
+}
+
 type IndexData struct {
-	Query  string
-	Result string
-	Error  string
+	Query     string
+	Result    string
+	Error     string
+	Notebooks []Notebook // List of existing notebooks
 }
 
 type RepoPageData struct {
@@ -572,13 +600,83 @@ func main() {
 func indexHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
+	notebooks, err := listNotebooks()
+	if err != nil {
+		log.Printf("Error listing notebooks: %v", err)
+		// Don't fail the whole page, just log the error and proceed without notebooks
+	}
+
 	data := IndexData{
-		Query: r.URL.Query().Get("repo"),
+		Query:     r.URL.Query().Get("repo"),
+		Notebooks: notebooks,
 	}
 
 	if err := indexTmpl.Execute(w, data); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
+}
+
+// listNotebooks scans the worktree directory and returns a list of existing notebooks.
+func listNotebooks() ([]Notebook, error) {
+	var notebooks []Notebook
+	worktreeBaseDir := filepath.Join(workDir, "worktree")
+
+	// Check if the base directory exists
+	if _, err := os.Stat(worktreeBaseDir); os.IsNotExist(err) {
+		return []Notebook{}, nil // No worktrees directory, so no notebooks
+	} else if err != nil {
+		return nil, fmt.Errorf("error accessing worktree base directory %q: %w", worktreeBaseDir, err)
+	}
+
+	// owner directories
+	ownerDirs, err := os.ReadDir(worktreeBaseDir)
+	if err != nil {
+		return nil, fmt.Errorf("error reading worktree base directory %q: %w", worktreeBaseDir, err)
+	}
+
+	for _, ownerEntry := range ownerDirs {
+		if !ownerEntry.IsDir() {
+			continue
+		}
+		owner := ownerEntry.Name()
+		repoBaseDir := filepath.Join(worktreeBaseDir, owner)
+
+		// repo directories
+		repoDirs, err := os.ReadDir(repoBaseDir)
+		if err != nil {
+			log.Printf("Error reading repo directory %q: %v", repoBaseDir, err)
+			continue
+		}
+
+		for _, repoEntry := range repoDirs {
+			if !repoEntry.IsDir() {
+				continue
+			}
+			repo := repoEntry.Name()
+			notebookBaseDir := filepath.Join(repoBaseDir, repo)
+
+			// notebook directories (which are the worktrees)
+			notebookDirs, err := os.ReadDir(notebookBaseDir)
+			if err != nil {
+				log.Printf("Error reading notebook directory %q: %v", notebookBaseDir, err)
+				continue
+			}
+
+			for _, notebookEntry := range notebookDirs {
+				if !notebookEntry.IsDir() {
+					continue
+				}
+				notebookName := notebookEntry.Name()
+				notebooks = append(notebooks, Notebook{
+					Owner:    owner,
+					Repo:     repo,
+					RepoName: fmt.Sprintf("%s/%s", owner, repo),
+					Name:     notebookName,
+				})
+			}
+		}
+	}
+	return notebooks, nil
 }
 
 // runCommandInWorktree executes a command within the specified worktree directory.
