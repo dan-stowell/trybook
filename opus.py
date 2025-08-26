@@ -32,29 +32,29 @@ BASE_HTML = """<!DOCTYPE html>
     <title>trybook</title>
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
     <style>
-        body { padding: 1rem; font-family: system-ui; }
-        .prompt-box { padding: 0.5rem 1rem; border: 1px solid #64B5F6; 
+        body {{ padding: 1rem; font-family: system-ui; }}
+        .prompt-box {{ padding: 0.5rem 1rem; border: 1px solid #64B5F6; 
                       border-radius: 4px; background: #E3F2FD; 
-                      font-style: italic; color: #3F51B5; margin: 1rem 0; }
-        .llm-box { padding: 0.5rem 1rem; border: 1px solid #ddd; 
+                      font-style: italic; color: #3F51B5; margin: 1rem 0; }}
+        .llm-box {{ padding: 0.5rem 1rem; border: 1px solid #ddd; 
                    border-radius: 4px; background: #fcfcfc; 
-                   margin: 0.5rem 0; position: relative; }
-        .llm-title { position: absolute; bottom: 0.5rem; right: 0.5rem; 
+                   margin: 0.5rem 0; position: relative; }}
+        .llm-title {{ position: absolute; bottom: 0.5rem; right: 0.5rem; 
                      font-size: 0.75em; color: #888; 
                      background: rgba(255, 255, 255, 0.7); 
-                     padding: 0.2em 0.5em; border-radius: 3px; }
-        .running { background: #fff3e0; border-color: #ff9800; }
-        .success { background: #e8f5e9; border-color: #4caf50; }
-        .error { background: #ffebee; border-color: #f44336; }
-        pre { white-space: pre-wrap; font-family: monospace; margin: 0; }
-        .suggestions div { padding: 0.5rem; border: 1px solid #ddd; 
-                          cursor: pointer; background: white; }
-        .suggestions div:hover { background: #f7f7f7; }
-        form { display: flex; gap: 0.5rem; margin: 1rem 0; }
-        input[type="text"], input[type="url"] { 
+                     padding: 0.2em 0.5em; border-radius: 3px; }}
+        .running {{ background: #fff3e0; border-color: #ff9800; }}
+        .success {{ background: #e8f5e9; border-color: #4caf50; }}
+        .error {{ background: #ffebee; border-color: #f44336; }}
+        pre {{ white-space: pre-wrap; font-family: monospace; margin: 0; }}
+        .suggestions div {{ padding: 0.5rem; border: 1px solid #ddd; 
+                          cursor: pointer; background: white; }}
+        .suggestions div:hover {{ background: #f7f7f7; }}
+        form {{ display: flex; gap: 0.5rem; margin: 1rem 0; }}
+        input[type="text"], input[type="url"] {{ 
             flex-grow: 1; font-size: 1.25rem; padding: 0.6rem 0.75rem; 
-        }
-        button { font-size: 1.1rem; padding: 0.6rem 1rem; cursor: pointer; }
+        }}
+        button {{ font-size: 1.1rem; padding: 0.6rem 1rem; cursor: pointer; }}
     </style>
 </head>
 <body>
