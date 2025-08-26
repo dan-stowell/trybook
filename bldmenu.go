@@ -76,7 +76,7 @@ const htmlTemplate = `
     </style>
 </head>
 <body>
-    <h1>Project: {{.ProjectName}}</h1>
+    <h1>{{.ProjectName}}</h1>
     <p><strong>Git Branch:</strong> {{.GitBranch}}</p>
     <p><strong>Git Commit:</strong> {{.GitCommit}}</p>
     <h2>Detected Build Files:</h2>
