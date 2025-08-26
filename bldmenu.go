@@ -43,43 +43,32 @@ func main() {
 
 	foundFiles := make(map[string][]string)
 
-	err = filepath.Walk(rootDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			// If there's an error accessing a path, just skip it and continue
-			return nil
+	files, err := os.ReadDir(rootDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error reading current directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	for _, file := range files {
+		if file.IsDir() {
+			continue
 		}
 
-		if info.IsDir() {
-			// Skip common version control and build output directories
-			if info.Name() == ".git" || info.Name() == "node_modules" || info.Name() == "target" || info.Name() == "build" || info.Name() == "dist" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
-		fileName := info.Name()
+		fileName := file.Name()
 		for system, patterns := range buildFilePatterns {
 			for _, pattern := range patterns {
 				if strings.HasPrefix(pattern, "*.") { // Handle wildcard extensions like *.cabal, *.sln, *.csproj
 					suffix := strings.TrimPrefix(pattern, "*")
 					if strings.HasSuffix(fileName, suffix) {
-						relPath, _ := filepath.Rel(rootDir, path)
-						foundFiles[system] = append(foundFiles[system], relPath)
+						foundFiles[system] = append(foundFiles[system], fileName)
 						break // Found a match for this system, move to next system
 					}
 				} else if fileName == pattern {
-					relPath, _ := filepath.Rel(rootDir, path)
-					foundFiles[system] = append(foundFiles[system], relPath)
+					foundFiles[system] = append(foundFiles[system], fileName)
 					break // Found a match for this system, move to next system
 				}
 			}
 		}
-		return nil
-	})
-
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error walking the directory: %v\n", err)
-		os.Exit(1)
 	}
 
 	if len(foundFiles) == 0 {
