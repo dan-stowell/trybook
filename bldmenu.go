@@ -96,7 +96,7 @@ const htmlTemplate = `
 </head>
 <body>
     <h1>{{.ProjectName}}</h1>
-    <p><strong>Git:</strong> {{.GitBranch}}
+    <p>{{.GitBranch}}
     {{if .GitHubURL}}
         (<a href="{{.GitHubURL}}" target="_blank">{{.GitCommit}}</a>)
     {{else}}
