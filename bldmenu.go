@@ -2,9 +2,100 @@ package main
 
 import (
 	"fmt"
+	"html/template"
+	"net/http"
 	"os"
+	"os/exec"
+	"runtime"
 	"strings"
 )
+
+// ProjectInfo holds all the data to be displayed on the web page.
+type ProjectInfo struct {
+	ProjectName string
+	GitBranch   string
+	GitCommit   string
+	BuildFiles  map[string][]string
+}
+
+// getGitInfo retrieves the project name, current Git branch, and commit hash.
+func getGitInfo() (projectName, branch, commit string) {
+	// Get project name from current directory
+	wd, err := os.Getwd()
+	if err == nil {
+		projectName = filepath.Base(wd)
+	}
+
+	// Get Git branch
+	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	output, err := cmd.Output()
+	if err == nil {
+		branch = strings.TrimSpace(string(output))
+	}
+
+	// Get Git commit
+	cmd = exec.Command("git", "rev-parse", "HEAD")
+	output, err = cmd.Output()
+	if err == nil {
+		commit = strings.TrimSpace(string(output))
+	}
+	return
+}
+
+// openBrowser tries to open the URL in a default web browser.
+func openBrowser(url string) {
+	var err error
+	switch runtime.GOOS {
+	case "linux":
+		err = exec.Command("xdg-open", url).Start()
+	case "windows":
+		err = exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
+	case "darwin":
+		err = exec.Command("open", url).Start()
+	default:
+		err = fmt.Errorf("unsupported platform")
+	}
+	if err != nil {
+		fmt.Printf("Error opening browser: %v\nPlease open %s manually.\n", err, url)
+	}
+}
+
+// htmlTemplate is the HTML content for the web page.
+const htmlTemplate = `
+<!DOCTYPE html>
+<html>
+<head>
+    <title>{{.ProjectName}} Build Info</title>
+    <style>
+        body { font-family: sans-serif; margin: 2em; }
+        h1 { color: #333; }
+        ul { list-style-type: none; padding: 0; }
+        li { margin-bottom: 0.5em; }
+        .category { font-weight: bold; margin-top: 1em; }
+    </style>
+</head>
+<body>
+    <h1>Project: {{.ProjectName}}</h1>
+    <p><strong>Git Branch:</strong> {{.GitBranch}}</p>
+    <p><strong>Git Commit:</strong> {{.GitCommit}}</p>
+    <h2>Detected Build Files:</h2>
+    {{if .BuildFiles}}
+        <ul>
+            {{range $system, $paths := .BuildFiles}}
+                <li class="category">{{$system}}:</li>
+                <ul>
+                    {{range $path := $paths}}
+                        <li>{{$path}}</li>
+                    {{end}}
+                </ul>
+            {{end}}
+        </ul>
+    {{else}}
+        <p>No common build files found in the current directory.</p>
+    {{end}}
+</body>
+</html>
+`
 
 // buildFilePatterns maps build system names to a list of their common file patterns.
 var buildFilePatterns = map[string][]string{
@@ -70,14 +161,38 @@ func main() {
 		}
 	}
 
-	if len(foundFiles) == 0 {
-		fmt.Println("No common build files found.")
-		return
+	projectName, gitBranch, gitCommit := getGitInfo()
+
+	tmpl, err := template.New("bldmenu").Parse(htmlTemplate)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error parsing HTML template: %v\n", err)
+		os.Exit(1)
 	}
 
-	for system, paths := range foundFiles {
-		for _, p := range paths {
-			fmt.Printf("%s %s\n", p, system)
+	data := ProjectInfo{
+		ProjectName: projectName,
+		GitBranch:   gitBranch,
+		GitCommit:   gitCommit,
+		BuildFiles:  foundFiles,
+	}
+
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		err := tmpl.Execute(w, data)
+		if err != nil {
+			http.Error(w, "Error rendering template", http.StatusInternalServerError)
+			fmt.Fprintf(os.Stderr, "Error executing template: %v\n", err)
 		}
+	})
+
+	port := "8080"
+	url := "http://localhost:" + port
+	fmt.Printf("Starting server on %s\n", url)
+
+	openBrowser(url)
+
+	err = http.ListenAndServe(":"+port, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error starting server: %v\n", err)
+		os.Exit(1)
 	}
 }
