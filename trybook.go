@@ -933,25 +933,34 @@ func runLLMCommand(llmResponse *LLMResponse, worktreePath, llmName, prompt strin
 // executePromptTask orchestrates the execution of multiple LLM commands for a single prompt.
 func executePromptTask(pe *PromptExecution, worktreePath, prompt, notebookName string) {
 	var wg sync.WaitGroup
-	wg.Add(1) // Always add for Claude
-
-	// Run Claude
-	go func() {
-		defer wg.Done()
-		runLLMCommand(&pe.Claude, worktreePath, "claude", prompt)
-	}()
 
 	// Check if the prompt is a "test <word>" command
-	if strings.HasPrefix(prompt, "test ") {
-		word := strings.TrimSpace(strings.TrimPrefix(prompt, "test "))
-		if word != "" {
-			wg.Add(2) // Add for Bazel Query and Bazel Test
+	isTestPrompt := strings.HasPrefix(prompt, "test ")
+	word := ""
+	if isTestPrompt {
+		word = strings.TrimSpace(strings.TrimPrefix(prompt, "test "))
+	}
 
-			go func() {
-				defer wg.Done()
-				runBazelQueryAndTest(&pe.BazelQuery, &pe.BazelTest, worktreePath, word, notebookName)
-			}()
-		}
+	if isTestPrompt && word != "" {
+		wg.Add(2) // Add for Bazel Query and Bazel Test
+
+		go func() {
+			defer wg.Done()
+			runBazelQueryAndTest(&pe.BazelQuery, &pe.BazelTest, worktreePath, word, notebookName)
+		}()
+		// Claude is not run for "test" prompts
+		pe.Claude.mu.Lock()
+		pe.Claude.Status = "skipped"
+		pe.Claude.Output = "Claude execution skipped for 'test' prompt."
+		pe.Claude.Done = true
+		pe.Claude.mu.Unlock()
+	} else {
+		wg.Add(1) // Only add for Claude if not a test prompt
+		// Run Claude
+		go func() {
+			defer wg.Done()
+			runLLMCommand(&pe.Claude, worktreePath, "claude", prompt)
+		}()
 	}
 
 	wg.Wait() // Wait for all commands to complete
@@ -1033,8 +1042,15 @@ func runBazelQueryAndTest(queryResp, testResp *LLMResponse, worktreePath, word, 
 		return
 	}
 
-	// Extract targets from query output (one target per line)
-	targets := strings.Fields(queryResp.Output)
+	// Extract targets from query output (one target per line, starting with //)
+	var targets []string
+	for _, line := range strings.Split(queryResp.Output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "//") {
+			targets = append(targets, line)
+		}
+	}
+
 	if len(targets) == 0 {
 		testResp.mu.Lock()
 		testResp.Status = "success"
@@ -1269,10 +1285,13 @@ func apiSummarizeTaskHandler(w http.ResponseWriter, r *http.Request) {
 	bazelTestResp := buildLLMResponseData(&pe.BazelTest, r.Context())
 
 	// Determine overall status for the prompt execution
-	// If it's a "test" prompt, overall status depends on BazelTest.
-	// Otherwise, it depends on Claude.
 	overallStatus := "running"
-	if strings.HasPrefix(r.FormValue("prompt"), "test ") { // Check original prompt to determine primary task
+	// Check if the original prompt was a "test" prompt
+	originalPrompt := r.FormValue("prompt")
+	isTestPrompt := strings.HasPrefix(originalPrompt, "test ")
+
+	if isTestPrompt {
+		// For "test" prompts, overall status depends on BazelTest
 		if pe.BazelTest.Done {
 			if pe.BazelTest.Status == "success" {
 				overallStatus = "success"
@@ -1281,6 +1300,7 @@ func apiSummarizeTaskHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	} else {
+		// For other prompts, overall status depends on Claude
 		if pe.Claude.Done {
 			if pe.Claude.Status == "success" {
 				overallStatus = "success"
