@@ -99,11 +99,11 @@ const htmlTemplate = `
 </head>
 <body>
     <h1>{{.ProjectName}}</h1>
-    <p>{{.GitBranch}}
+    <p>
     {{if .GitHubURL}}
-        (<a href="{{.GitHubURL}}" target="_blank">{{.GitCommit}}</a>)
+        <a href="{{.GitHubURL}}" target="_blank">{{.GitBranch}} ({{.GitCommit}})</a>
     {{else}}
-        ({{.GitCommit}})
+        {{.GitBranch}} ({{.GitCommit}})
     {{end}}
     </p>
     <h2>Detected Build Files:</h2>
