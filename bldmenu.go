@@ -88,9 +88,8 @@ func main() {
 	}
 
 	for system, paths := range foundFiles {
-		fmt.Printf("%s:\n", system)
 		for _, p := range paths {
-			fmt.Printf("  - %s\n", p)
+			fmt.Printf("%s %s\n", p, system)
 		}
 	}
 }
