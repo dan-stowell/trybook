@@ -108,7 +108,6 @@ const htmlTemplate = `
         <button onclick="copyToClipboard('{{.SuggestedBuildCommand}}')" style="font-size: 2em; padding: 20px 40px; cursor: pointer;">
             {{.SuggestedBuildCommand}}
         </button>
-        <p>(Click to copy)</p>
     {{else}}
         <p>No suggested build command found.</p>
     {{end}}
