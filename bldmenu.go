@@ -13,11 +13,11 @@ import (
 
 // ProjectInfo holds all the data to be displayed on the web page.
 type ProjectInfo struct {
-	ProjectName string
-	GitBranch   string
-	GitCommit   string
-	GitHubURL   string // New field for GitHub commit URL
-	BuildFiles  map[string][]string
+	ProjectName         string
+	GitBranch           string
+	GitCommit           string
+	GitHubURL           string // New field for GitHub commit URL
+	SuggestedBuildCommand string
 }
 
 // getGitInfo retrieves the project name, current Git branch, commit hash, and GitHub URL.
@@ -104,50 +104,88 @@ const htmlTemplate = `
         <h1>{{.ProjectName}}</h1>
     {{end}}
     <p><i>{{.GitBranch}} ({{.GitCommit}})</i></p>
-    <h2>Detected Build Files:</h2>
-    {{if .BuildFiles}}
-        <ul>
-            {{range $system, $paths := .BuildFiles}}
-                <li class="category">{{$system}}:</li>
-                <ul>
-                    {{range $path := $paths}}
-                        <li>{{$path}}</li>
-                    {{end}}
-                </ul>
-            {{end}}
-        </ul>
+    {{if .SuggestedBuildCommand}}
+        <button onclick="copyToClipboard('{{.SuggestedBuildCommand}}')" style="font-size: 2em; padding: 20px 40px; cursor: pointer;">
+            {{.SuggestedBuildCommand}}
+        </button>
+        <p>(Click to copy)</p>
     {{else}}
-        <p>No common build files found in the current directory.</p>
+        <p>No suggested build command found.</p>
     {{end}}
+
+    <script>
+        function copyToClipboard(text) {
+            navigator.clipboard.writeText(text).then(function() {
+                alert('Copied to clipboard: ' + text);
+            }, function(err) {
+                console.error('Could not copy text: ', err);
+            });
+        }
+    </script>
 </body>
 </html>
 `
 
-// buildFilePatterns maps build system names to a list of their common file patterns.
-var buildFilePatterns = map[string][]string{
-	"Node.js":   {"package.json"}, // yarn.lock, pnpm-lock.yaml can also indicate, but package.json is primary
-	"Python":    {"pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "poetry.lock", "hatch.toml"},
-	"Bazel":     {"MODULE.bazel", "WORKSPACE.bazel", "WORKSPACE", ".bazelrc"},
-	"Go":        {"go.mod"},
-	"Rust":      {"Cargo.toml"},
-	"Gradle (Java)": {"gradlew", "build.gradle", "build.gradle.kts"},
-	"Maven (Java)": {"pom.xml"},
-	"CMake":     {"CMakeLists.txt"},
-	"Autotools": {"configure.ac", "configure.in", "Makefile.am"},
-	"Docker":    {"Dockerfile", "docker/Dockerfile"},
-	"Make":      {"Makefile", "makefile", "GNUmakefile"},
-	"Pants":     {"pants.toml", "pants.ini"},
-	"Buck":      {".buckconfig"},
-	"Ninja":     {"build.ninja"},
-	"Meson":     {"meson.build"},
-	"SCons":     {"SConstruct", "sconstruct"},
-	"Swift":     {"Package.swift"},
-	"Zig":       {"build.zig"},
-	"Haskell":   {"stack.yaml"}, // *.cabal can also indicate
-	".NET":      {".sln", ".csproj"},
-	"Nix":       {"flake.nix", "default.nix"},
-	"Just":      {"Justfile"},
-	"Task":      {"Taskfile.yml"},
+// buildFilePatterns maps build system names to a list of their common file patterns and a suggested build command.
+var buildFilePatterns = map[string]struct {
+	Files   []string
+	Command string
+}{
+	"Node.js":       {Files: []string{"package.json"}, Command: "npm install && npm run build"},
+	"Python":        {Files: []string{"pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "poetry.lock", "hatch.toml"}, Command: "pip install -r requirements.txt && python setup.py install"},
+	"Bazel":         {Files: []string{"MODULE.bazel", "WORKSPACE.bazel", "WORKSPACE", ".bazelrc"}, Command: "bazel build //..."},
+	"Go":            {Files: []string{"go.mod"}, Command: "go build ./..."},
+	"Rust":          {Files: []string{"Cargo.toml"}, Command: "cargo build"},
+	"Gradle (Java)": {Files: []string{"gradlew", "build.gradle", "build.gradle.kts"}, Command: "./gradlew build"},
+	"Maven (Java)":  {Files: []string{"pom.xml"}, Command: "mvn clean install"},
+	"CMake":         {Files: []string{"CMakeLists.txt"}, Command: "cmake . && make"},
+	"Autotools":     {Files: []string{"configure.ac", "configure.in", "Makefile.am"}, Command: "./configure && make"},
+	"Docker":        {Files: []string{"Dockerfile", "docker/Dockerfile"}, Command: "docker build . -t my-image"},
+	"Make":          {Files: []string{"Makefile", "makefile", "GNUmakefile"}, Command: "make"},
+	"Pants":         {Files: []string{"pants.toml", "pants.ini"}, Command: "pants package ::"},
+	"Buck":          {Files: []string{".buckconfig"}, Command: "buck build //..."},
+	"Ninja":         {Files: []string{"build.ninja"}, Command: "ninja"},
+	"Meson":         {Files: []string{"meson.build"}, Command: "meson setup build && ninja -C build"},
+	"SCons":         {Files: []string{"SConstruct", "sconstruct"}, Command: "scons"},
+	"Swift":         {Files: []string{"Package.swift"}, Command: "swift build"},
+	"Zig":           {Files: []string{"build.zig"}, Command: "zig build"},
+	"Haskell":       {Files: []string{"stack.yaml"}, Command: "stack build"},
+	".NET":          {Files: []string{".sln", ".csproj"}, Command: "dotnet build"},
+	"Nix":           {Files: []string{"flake.nix", "default.nix"}, Command: "nix build"},
+	"Just":          {Files: []string{"Justfile"}, Command: "just"},
+	"Task":          {Files: []string{"Taskfile.yml"}, Command: "task build"},
+}
+
+// getSuggestedBuildCommand checks for the presence of build files and returns a suggested command.
+func getSuggestedBuildCommand(rootDir string) string {
+	files, err := os.ReadDir(rootDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error reading current directory for build command suggestion: %v\n", err)
+		return ""
+	}
+
+	fileNames := make(map[string]bool)
+	for _, file := range files {
+		if !file.IsDir() {
+			fileNames[file.Name()] = true
+		}
+	}
+
+	for system, info := range buildFilePatterns {
+		for _, pattern := range info.Files {
+			if strings.HasPrefix(pattern, "*.") {
+				suffix := strings.TrimPrefix(pattern, "*")
+				for fileName := range fileNames {
+					if strings.HasSuffix(fileName, suffix) {
+						return fmt.Sprintf("build (%s): %s", system, info.Command)
+					}
+				}
+			} else if fileNames[pattern] {
+				return fmt.Sprintf("build (%s): %s", system, info.Command)
+			}
+		}
+	}
+	return ""
 }
 
 func main() {
@@ -157,37 +195,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	foundFiles := make(map[string][]string)
-
-	files, err := os.ReadDir(rootDir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error reading current directory: %v\n", err)
-		os.Exit(1)
-	}
-
-	for _, file := range files {
-		if file.IsDir() {
-			continue
-		}
-
-		fileName := file.Name()
-		for system, patterns := range buildFilePatterns {
-			for _, pattern := range patterns {
-				if strings.HasPrefix(pattern, "*.") { // Handle wildcard extensions like *.cabal, *.sln, *.csproj
-					suffix := strings.TrimPrefix(pattern, "*")
-					if strings.HasSuffix(fileName, suffix) {
-						foundFiles[system] = append(foundFiles[system], fileName)
-						break // Found a match for this system, move to next system
-					}
-				} else if fileName == pattern {
-					foundFiles[system] = append(foundFiles[system], fileName)
-					break // Found a match for this system, move to next system
-				}
-			}
-		}
-	}
-
 	projectName, gitBranch, gitCommit, githubURL := getGitInfo()
+	suggestedBuildCommand := getSuggestedBuildCommand(rootDir)
 
 	tmpl, err := template.New("bldmenu").Parse(htmlTemplate)
 	if err != nil {
@@ -196,11 +205,11 @@ func main() {
 	}
 
 	data := ProjectInfo{
-		ProjectName: projectName,
-		GitBranch:   gitBranch,
-		GitCommit:   gitCommit,
-		GitHubURL:   githubURL,
-		BuildFiles:  foundFiles,
+		ProjectName:         projectName,
+		GitBranch:           gitBranch,
+		GitCommit:           gitCommit,
+		GitHubURL:           githubURL,
+		SuggestedBuildCommand: suggestedBuildCommand,
 	}
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
