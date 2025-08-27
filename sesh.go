@@ -65,11 +65,12 @@ func indexHandler(w http.ResponseWriter, r *http.Request, dir string) {
             font-size: 1.2em;
             box-sizing: border-box; /* Include padding in width */
         }
-        #output-container {
+        .command-output {
             background-color: #f0f0f0;
             border: 1px solid #ccc;
             padding: 10px;
-            margin-top: 10px;
+            margin-top: 5px;
+            margin-bottom: 10px;
             min-height: 60px; /* Enough for 3 lines of text */
             font-family: monospace;
             white-space: pre-wrap; /* Preserve whitespace and wrap text */
@@ -80,32 +81,25 @@ func indexHandler(w http.ResponseWriter, r *http.Request, dir string) {
         .output-line {
             padding: 2px 0;
         }
+        .command-entry {
+            margin-bottom: 15px;
+        }
     </style>
 </head>
 <body>
     <h1>{{.RepoName}} ({{.BranchName}})</h1>
-    <div id="input-container">
-        <input type="text" class="sesh-input" placeholder="Type your command here..." autofocus>
+    <div id="session-log">
+        <div class="command-entry">
+            <input type="text" class="sesh-input" placeholder="Type your command here..." autofocus>
+            <div class="command-output"></div>
+        </div>
     </div>
-    <div id="output-container"></div>
 
     <script>
         document.addEventListener('DOMContentLoaded', function() {
-            const outputContainer = document.getElementById('output-container');
+            const sessionLog = document.getElementById('session-log');
             const maxOutputLines = 3;
-            let eventSource = null; // To hold the SSE connection
-
-            function addOutputLine(line) {
-                const lineDiv = document.createElement('div');
-                lineDiv.className = 'output-line';
-                lineDiv.textContent = line;
-                outputContainer.prepend(lineDiv); // Add to top to maintain reverse order
-
-                // Remove old lines if exceeding max
-                while (outputContainer.children.length > maxOutputLines) {
-                    outputContainer.removeChild(outputContainer.lastChild);
-                }
-            }
+            let currentEventSource = null; // To hold the SSE connection for the active command
 
             function setupInput(inputElement) {
                 inputElement.addEventListener('keydown', function(event) {
@@ -122,39 +116,63 @@ func indexHandler(w http.ResponseWriter, r *http.Request, dir string) {
                         currentInput.setAttribute('readonly', true);
                         currentInput.blur();
 
-
-                        // Clear previous output
-                        outputContainer.innerHTML = '';
+                        // Get the output container for this specific command entry
+                        const currentCommandEntry = currentInput.closest('.command-entry');
+                        const outputContainer = currentCommandEntry.querySelector('.command-output');
+                        outputContainer.innerHTML = ''; // Clear previous output for this entry
 
                         // Close existing EventSource if any
-                        if (eventSource) {
-                            eventSource.close();
+                        if (currentEventSource) {
+                            currentEventSource.close();
                         }
 
                         // Send command to backend and open SSE for output
-                        eventSource = new EventSource("/execute?cmd=" + encodeURIComponent(inputValue));
-                        eventSource.onmessage = function(event) {
-                            addOutputLine(event.data);
+                        currentEventSource = new EventSource("/execute?cmd=" + encodeURIComponent(inputValue));
+                        currentEventSource.onmessage = function(event) {
+                            const lineDiv = document.createElement('div');
+                            lineDiv.className = 'output-line';
+                            lineDiv.textContent = event.data;
+                            outputContainer.prepend(lineDiv); // Add to top to maintain reverse order
+
+                            // Remove old lines if exceeding max
+                            while (outputContainer.children.length > maxOutputLines) {
+                                outputContainer.removeChild(outputContainer.lastChild);
+                            }
                         };
-                        eventSource.onerror = function(err) {
-                            if (eventSource.readyState === EventSource.CLOSED) {
-                                addOutputLine("Command finished.");
+                        currentEventSource.onerror = function(err) {
+                            if (currentEventSource.readyState === EventSource.CLOSED) {
+                                const lineDiv = document.createElement('div');
+                                lineDiv.className = 'output-line';
+                                lineDiv.textContent = "Command finished.";
+                                outputContainer.prepend(lineDiv);
                             } else {
                                 console.error('EventSource failed:', err);
-                                addOutputLine("Command failed.");
+                                const lineDiv = document.createElement('div');
+                                lineDiv.className = 'output-line';
+                                lineDiv.textContent = "Command failed.";
+                                outputContainer.prepend(lineDiv);
                             }
-                            eventSource.close();
+                            currentEventSource.close();
+                            currentEventSource = null; // Clear the reference
                         };
 
-                        // Create a new input field
+                        // Create a new command entry (input + output div)
+                        const newCommandEntry = document.createElement('div');
+                        newCommandEntry.className = 'command-entry';
+
                         const newInput = document.createElement('input');
                         newInput.type = 'text';
                         newInput.className = 'sesh-input';
                         newInput.placeholder = 'Type your command here...';
 
-                        // Append the new input field
-                        const inputContainer = document.getElementById('input-container');
-                        inputContainer.appendChild(newInput);
+                        const newOutputDiv = document.createElement('div');
+                        newOutputDiv.className = 'command-output';
+
+                        newCommandEntry.appendChild(newInput);
+                        newCommandEntry.appendChild(newOutputDiv);
+
+                        // Append the new command entry to the session log
+                        sessionLog.appendChild(newCommandEntry);
 
                         // Focus on the new input field
                         newInput.focus();
@@ -237,7 +255,6 @@ func executeHandler(w http.ResponseWriter, r *http.Request, dir string) {
 			line := scanner.Text()
 			fmt.Fprintf(w, "data: %s\n\n", line)
 			flusher.Flush()
-			time.Sleep(5 * time.Millisecond) // Small delay to ensure client can keep up
 		}
 		if err := scanner.Err(); err != nil {
 			log.Printf("Error reading from pipe: %v", err)
