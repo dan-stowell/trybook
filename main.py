@@ -1,6 +1,7 @@
 import os
 import sys
 import socket
+import sqlite3
 from datetime import datetime
 import uvicorn
 from fastapi import FastAPI, Path
@@ -39,12 +40,32 @@ def main():
     # Change to the repository directory
     os.chdir(repo_path)
 
+    db_path = os.path.join(repo_path, ".repobookdb")
+
+    def init_db():
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS branches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                branch_name TEXT NOT NULL,
+                commit_sha TEXT NOT NULL,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        conn.commit()
+        conn.close()
+
+    init_db()
+
     # Get current branch and commit info
     try:
         current_branch = repo.active_branch.name
+        latest_commit_sha = repo.head.commit.hexsha
         latest_commit_message = repo.head.commit.message.strip()
     except TypeError: # Detached HEAD state
         current_branch = "detached HEAD"
+        latest_commit_sha = repo.head.commit.hexsha
         latest_commit_message = repo.head.commit.message.strip()
     except Exception as e:
         print(f"Error getting Git info: {e}", file=sys.stderr)
@@ -57,6 +78,16 @@ def main():
         new_branch = repo.create_head(new_branch_name)
         new_branch.checkout()
         print(f"Checked out new branch: {new_branch_name}")
+
+        # Store branch info in DB
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO branches (branch_name, commit_sha) VALUES (?, ?)",
+                       (new_branch_name, latest_commit_sha))
+        conn.commit()
+        conn.close()
+        print(f"Stored branch '{new_branch_name}' with commit '{latest_commit_sha}' in database.")
+
     except git.GitCommandError as e:
         print(f"Error creating/checking out branch: {e}", file=sys.stderr)
         sys.exit(1)
