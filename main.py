@@ -163,10 +163,10 @@ def main():
             <p><strong>Branch:</strong> {new_branch_name}</p>
             <p><strong>Latest Commit:</strong> {latest_commit_message}</p>
 
-            <div id="input-section">
-                <div class="input-form">
-                    <form hx-post="/submit_input" hx-target="#input-section" hx-swap="outerHTML">
-                        <input type="text" name="user_input" placeholder="Enter your thoughts here..." hx-trigger="keyup[keyCode==13]" />
+            <div id="input-container">
+                <div class="input-entry">
+                    <form hx-post="/submit_input" hx-target="#input-container" hx-swap="beforeend">
+                        <input type="text" name="user_input" placeholder="Enter your thoughts here..." hx-trigger="keyup[keyCode==13]" autofocus />
                     </form>
                 </div>
             </div>
@@ -188,20 +188,18 @@ def main():
             # Get updated repo status
             updated_status = get_repo_status()
 
-            # Return new HTML for the input section
+            # Return new HTML for the appended content
             return HTMLResponse(content=f"""
-            <div id="input-section">
-                <div class="input-form">
-                    <input type="text" name="user_input" value="{user_input}" readonly />
-                </div>
-                <div class="status-message">
-                    {updated_status}
-                </div>
-                <div class="input-form">
-                    <form hx-post="/submit_input" hx-target="#input-section" hx-swap="outerHTML">
-                        <input type="text" name="user_input" placeholder="Enter more thoughts here..." hx-trigger="keyup[keyCode==13]" autofocus />
-                    </form>
-                </div>
+            <div class="input-entry">
+                <input type="text" name="user_input_readonly" value="{user_input}" readonly />
+            </div>
+            <div class="status-message">
+                {updated_status}
+            </div>
+            <div class="input-entry">
+                <form hx-post="/submit_input" hx-target="#input-container" hx-swap="beforeend">
+                    <input type="text" name="user_input" placeholder="Enter more thoughts here..." hx-trigger="keyup[keyCode==13]" autofocus />
+                </form>
             </div>
             """)
         except Exception as e:
