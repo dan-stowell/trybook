@@ -145,9 +145,10 @@ def main():
                 body {{ font-family: sans-serif; margin: 2em; }}
                 h1 {{ color: #333; }}
                 p {{ color: #666; font-size: 0.9em; }}
-                .input-form {{ margin-top: 1.5em; }}
-                .input-form input[type="text"] {{
-                    width: 80%;
+                .input-entry {{ margin-top: 1.5em; }}
+                .input-entry input[type="text"] {{
+                    width: 100%;
+                    box-sizing: border-box;
                     padding: 0.8em;
                     font-size: 1em;
                     border: 1px solid #ccc;
