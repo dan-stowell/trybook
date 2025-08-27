@@ -169,7 +169,7 @@ def main():
             <p><strong>Branch:</strong> {new_branch_name}</p>
             <p><strong>Latest Commit:</strong> {latest_commit_message}</p>
 
-            <div id="input-container">
+            <div id="input-container" hx-on:htmx:oobAfterSwap="this.querySelector(&quot;#current-input-form input[name='user_input']&quot;)?.focus()" hx-on:htmx:afterSwap="this.querySelector(&quot;#current-input-form input[name='user_input']&quot;)?.focus()">
                 <div class="input-entry" id="current-input-form">
                     <form hx-post="/submit_input" hx-target="#current-input-form" hx-swap="outerHTML">
                         <input type="text" name="user_input" placeholder="Enter your thoughts here..." autocomplete="off" autofocus />
@@ -200,11 +200,13 @@ def main():
             # Return HTML for the just-submitted input (now read-only) and the status message.
             # Also, use hx-swap-oob to append a new active input field at the end of #input-container.
             return HTMLResponse(content=f"""
-            <div class="input-entry">
-                <input type="text" name="user_input_readonly" value="{safe_input}" readonly />
-            </div>
-            <div class="status-message">
-                {updated_status}
+            <div class="submitted-entry">
+                <div class="input-entry">
+                    <input type="text" name="user_input_readonly" value="{safe_input}" readonly />
+                </div>
+                <div class="status-message">
+                    {updated_status}
+                </div>
             </div>
             <div id="input-container" hx-swap-oob="beforeend">
                 <div class="input-entry" id="current-input-form">
