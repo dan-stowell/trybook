@@ -122,10 +122,6 @@ func indexHandler(w http.ResponseWriter, r *http.Request, dir string) {
                         currentInput.setAttribute('readonly', true);
                         currentInput.blur();
 
-                        // Echo the input value
-                        const echoDiv = document.createElement('div');
-                        echoDiv.textContent = '> ' + inputValue;
-                        currentInput.parentNode.insertBefore(echoDiv, currentInput.nextSibling);
 
                         // Clear previous output
                         outputContainer.innerHTML = '';
