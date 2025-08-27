@@ -53,6 +53,14 @@ def main():
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS raw_inputs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                input_text TEXT NOT NULL,
+                commit_sha TEXT NOT NULL,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
         conn.commit()
         conn.close()
 
@@ -103,20 +111,50 @@ def main():
         <html>
         <head>
             <title>Repobook: {repo_name}</title>
+            <script src="https://unpkg.com/htmx.org@1.9.10"></script>
             <style>
                 body {{ font-family: sans-serif; margin: 2em; }}
                 h1 {{ color: #333; }}
                 p {{ color: #666; font-size: 0.9em; }}
+                .input-form {{ margin-top: 1.5em; }}
+                .input-form input[type="text"] {{
+                    width: 80%;
+                    padding: 0.8em;
+                    font-size: 1em;
+                    border: 1px solid #ccc;
+                    border-radius: 4px;
+                }}
             </style>
         </head>
         <body>
             <h1>{repo_name}</h1>
             <p><strong>Branch:</strong> {new_branch_name}</p>
             <p><strong>Latest Commit:</strong> {latest_commit_message}</p>
+
+            <div class="input-form">
+                <form hx-post="/submit_input" hx-target="#input-feedback" hx-swap="innerHTML" hx-on--after-request="this.reset()">
+                    <input type="text" name="user_input" placeholder="Enter your thoughts here..." hx-trigger="keyup[keyCode==13]" />
+                </form>
+                <div id="input-feedback" style="color: green; margin-top: 0.5em;"></div>
+            </div>
         </body>
         </html>
         """
         return HTMLResponse(content=html_content)
+
+    @app.post("/submit_input")
+    async def submit_input(user_input: str):
+        try:
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO raw_inputs (input_text, commit_sha) VALUES (?, ?)",
+                           (user_input, latest_commit_sha))
+            conn.commit()
+            conn.close()
+            return HTMLResponse(content="Input recorded!")
+        except Exception as e:
+            print(f"Error recording input: {e}", file=sys.stderr)
+            return HTMLResponse(content="Error recording input.", status_code=500)
 
     port = get_free_port()
     print(f"Starting Repobook server on http://127.0.0.1:{port}")
