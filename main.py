@@ -4,7 +4,7 @@ import socket
 import sqlite3
 from datetime import datetime
 import uvicorn
-from fastapi import FastAPI, Path
+from fastapi import FastAPI, Path, Form
 from fastapi.responses import HTMLResponse
 import git
 
@@ -143,7 +143,7 @@ def main():
         return HTMLResponse(content=html_content)
 
     @app.post("/submit_input")
-    async def submit_input(user_input: str):
+    async def submit_input(user_input: str = Form(...)):
         try:
             conn = sqlite3.connect(db_path)
             cursor = conn.cursor()
