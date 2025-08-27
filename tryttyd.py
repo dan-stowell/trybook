@@ -144,7 +144,9 @@ def start_tmux_session(session: str, cmd: str) -> None:
 {cmd}
 code=$?
 printf %d "$code" > {shlex.quote(status_file)}
-exec bash
+# Keep the terminal interactive but quiet: no startup files, no prompt.
+export PS1=
+exec bash --noprofile --norc -i
 """.strip()
     shell_cmd = f"bash -lc {shlex.quote(wrapper)}"
     subprocess.run(["tmux", "new-session", "-d", "-s", session, shell_cmd], check=True)
