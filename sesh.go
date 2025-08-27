@@ -141,10 +141,13 @@ func indexHandler(w http.ResponseWriter, r *http.Request, dir string) {
                             addOutputLine(event.data);
                         };
                         eventSource.onerror = function(err) {
-                            console.error('EventSource failed:', err);
+                            if (eventSource.readyState === EventSource.CLOSED) {
+                                addOutputLine("Command finished.");
+                            } else {
+                                console.error('EventSource failed:', err);
+                                addOutputLine("Command failed.");
+                            }
                             eventSource.close();
-                            addOutputLine("Command finished or failed.");
-                            // Re-enable input or show error
                         };
 
                         // Create a new input field
