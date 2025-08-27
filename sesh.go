@@ -139,21 +139,19 @@ func indexHandler(w http.ResponseWriter, r *http.Request, dir string) {
                             }
                         };
                         currentEventSource.onerror = function(err) {
-                            if (currentEventSource.readyState === EventSource.CLOSED) {
+                            console.error('EventSource failed:', err);
+                            // Only add a "Command failed" message if it's not a graceful close
+                            if (currentEventSource.readyState !== EventSource.CLOSED) {
                                 const lineDiv = document.createElement('div');
                                 lineDiv.className = 'output-line';
-                                lineDiv.textContent = "Command finished.";
-                                outputContainer.prepend(lineDiv);
-                            } else {
-                                console.error('EventSource failed:', err);
-                                const lineDiv = document.createElement('div');
-                                lineDiv.className = 'output-line';
-                                lineDiv.textContent = "Command failed.";
+                                lineDiv.textContent = "EventSource connection failed.";
                                 outputContainer.prepend(lineDiv);
                             }
                             currentEventSource.close();
                             currentEventSource = null; // Clear the reference
                         };
+
+                        // Listen for the custom 'end' event from the server
                         currentEventSource.addEventListener('end', function(event) {
                             const lineDiv = document.createElement('div');
                             lineDiv.className = 'output-line';
