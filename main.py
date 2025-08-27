@@ -224,7 +224,7 @@ def main():
         for input_text, commit_msg, short_sha in prior_rows:
             safe_input = html.escape(input_text or "", quote=True)
             display_msg_full = (commit_msg or "")
-            display_msg = display_msg_full.splitlines()[0].strip() if displayMsg_full := display_msg_full else ""
+            display_msg = display_msg_full.splitlines()[0].strip() if display_msg_full else ""
             safe_msg = html.escape(display_msg, quote=True)
             safe_short = html.escape(short_sha or "", quote=True)
             entries_html += f'''
