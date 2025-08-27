@@ -203,6 +203,33 @@ def main():
             return RedirectResponse(url=f"/notebook/{repo_segment}/{branch_segment}", status_code=307)
 
         latest_commit_message_current = repo.head.commit.message.strip()
+
+        # Load existing inputs for the current branch from DB
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT input_text, commit_message, short_sha FROM raw_inputs WHERE branch_name = ? ORDER BY id ASC",
+            (current_branch_name,),
+        )
+        prior_rows = cursor.fetchall()
+        conn.close()
+
+        entries_html = ""
+        for input_text, commit_msg, short_sha in prior_rows:
+            safe_input = html.escape(input_text or "", quote=True)
+            safe_msg = html.escape((commit_msg or "").strip(), quote=True)
+            safe_short = html.escape(short_sha or "", quote=True)
+            entries_html += f'''
+            <div class="submitted-entry">
+                <div class="input-entry">
+                    <input type="text" name="user_input_readonly" value="{safe_input}" readonly />
+                </div>
+                <div class="status-message">
+                    Commit: {safe_short} - {safe_msg}
+                </div>
+            </div>
+            '''
+
         html_content = f"""
         <!DOCTYPE html>
         <html>
@@ -239,6 +266,7 @@ def main():
             <p><strong>Latest Commit:</strong> {latest_commit_message_current}</p>
 
             <div id="input-container" hx-on:htmx:oobAfterSwap="this.querySelector(&quot;#current-input-form input[name='user_input']&quot;)?.focus()" hx-on:htmx:afterSwap="this.querySelector(&quot;#current-input-form input[name='user_input']&quot;)?.focus()">
+                {entries_html}
                 <div class="input-entry" id="current-input-form">
                     <form hx-post="/submit_input" hx-target="#current-input-form" hx-swap="outerHTML">
                         <input type="text" name="user_input" placeholder="Enter your thoughts here..." autocomplete="off" autofocus />
