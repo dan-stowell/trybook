@@ -64,7 +64,51 @@ func indexHandler(w http.ResponseWriter, r *http.Request, dir string) {
 </head>
 <body>
     <h1>{{.RepoName}} ({{.BranchName}})</h1>
-    <input type="text" placeholder="Type your command here...">
+    <div id="input-container">
+        <input type="text" class="sesh-input" placeholder="Type your command here..." autofocus>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            function setupInput(inputElement) {
+                inputElement.addEventListener('keydown', function(event) {
+                    if (event.key === 'Enter') {
+                        event.preventDefault(); // Prevent default form submission
+                        const currentInput = event.target;
+                        const inputValue = currentInput.value;
+
+                        // Make current input read-only
+                        currentInput.setAttribute('readonly', true);
+                        currentInput.blur(); // Remove focus from the current input
+
+                        // Echo the input value
+                        const echoDiv = document.createElement('div');
+                        echoDiv.textContent = '> ' + inputValue;
+                        currentInput.parentNode.insertBefore(echoDiv, currentInput.nextSibling);
+
+                        // Create a new input field
+                        const newInput = document.createElement('input');
+                        newInput.type = 'text';
+                        newInput.className = 'sesh-input';
+                        newInput.placeholder = 'Type your command here...';
+
+                        // Append the new input field
+                        const inputContainer = document.getElementById('input-container');
+                        inputContainer.appendChild(newInput);
+
+                        // Focus on the new input field
+                        newInput.focus();
+                    }
+                });
+            }
+
+            // Setup the initial input field
+            const initialInput = document.querySelector('.sesh-input');
+            if (initialInput) {
+                setupInput(initialInput);
+            }
+        });
+    </script>
 </body>
 </html>
 `))
