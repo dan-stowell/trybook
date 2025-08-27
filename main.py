@@ -6,8 +6,9 @@ from datetime import datetime
 import html
 import uvicorn
 from fastapi import FastAPI, Path, Form
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 import git
+from urllib.parse import quote
 
 def get_free_port():
     """Finds a free port on the system."""
@@ -175,7 +176,33 @@ def main():
 
     @app.get("/", response_class=HTMLResponse)
     async def read_root():
-        initial_status = get_repo_status()
+        # Redirect to canonical notebook URL: /notebook/<repo>/<branch>
+        try:
+            current_branch_name = repo.active_branch.name
+        except TypeError:
+            current_branch_name = "detached HEAD"
+        except Exception:
+            current_branch_name = active_branch_name
+        repo_segment = quote(repo_name, safe="")
+        branch_segment = quote(current_branch_name, safe="")
+        return RedirectResponse(url=f"/notebook/{repo_segment}/{branch_segment}", status_code=307)
+
+    @app.get("/notebook/{repo_slug}/{branch_name}", response_class=HTMLResponse)
+    async def notebook_page(repo_slug: str = Path(...), branch_name: str = Path(...)):
+        # Keep URL canonical: if path doesn't match current state, redirect
+        try:
+            current_branch_name = repo.active_branch.name
+        except TypeError:
+            current_branch_name = "detached HEAD"
+        except Exception:
+            current_branch_name = active_branch_name
+
+        if repo_slug != repo_name or branch_name != current_branch_name:
+            repo_segment = quote(repo_name, safe="")
+            branch_segment = quote(current_branch_name, safe="")
+            return RedirectResponse(url=f"/notebook/{repo_segment}/{branch_segment}", status_code=307)
+
+        latest_commit_message_current = repo.head.commit.message.strip()
         html_content = f"""
         <!DOCTYPE html>
         <html>
@@ -208,8 +235,8 @@ def main():
         </head>
         <body>
             <h1>{repo_name}</h1>
-            <p><strong>Branch:</strong> {active_branch_name}</p>
-            <p><strong>Latest Commit:</strong> {latest_commit_message}</p>
+            <p><strong>Branch:</strong> {current_branch_name}</p>
+            <p><strong>Latest Commit:</strong> {latest_commit_message_current}</p>
 
             <div id="input-container" hx-on:htmx:oobAfterSwap="this.querySelector(&quot;#current-input-form input[name='user_input']&quot;)?.focus()" hx-on:htmx:afterSwap="this.querySelector(&quot;#current-input-form input[name='user_input']&quot;)?.focus()">
                 <div class="input-entry" id="current-input-form">
