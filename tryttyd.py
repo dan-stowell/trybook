@@ -6,6 +6,7 @@
 import html
 import shutil
 import socket
+import shlex
 import subprocess
 import uuid
 from datetime import datetime
@@ -131,9 +132,9 @@ def start_tmux_session(session: str, cmd: str) -> None:
     # Set remain-on-exit globally to preserve panes after process exit.
     subprocess.run(["tmux", "set-option", "-g", "remain-on-exit", "on"], check=False)
 
-    # Create a detached session that runs the command via bash -lc "<cmd>" to respect shell features.
-    # The command runs in the session's first window/pane.
-    shell_cmd = f"bash -lc {html.escape(repr(cmd))}"
+    # Create a detached session that runs the command via bash -lc '<cmd>' to respect shell features.
+    # Use shlex.quote to safely pass the command as a single string to the shell (avoid HTML escaping).
+    shell_cmd = f"bash -lc {shlex.quote(cmd)}"
     subprocess.run(["tmux", "new-session", "-d", "-s", session, shell_cmd], check=True)
 
 
