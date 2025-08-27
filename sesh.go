@@ -136,7 +136,7 @@ func indexHandler(w http.ResponseWriter, r *http.Request, dir string) {
                         }
 
                         // Send command to backend and open SSE for output
-                        eventSource = new EventSource(`/execute?cmd=${encodeURIComponent(inputValue)}`);
+                        eventSource = new EventSource("/execute?cmd=" + encodeURIComponent(inputValue));
                         eventSource.onmessage = function(event) {
                             addOutputLine(event.data);
                         };
