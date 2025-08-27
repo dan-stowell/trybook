@@ -154,6 +154,14 @@ func indexHandler(w http.ResponseWriter, r *http.Request, dir string) {
                             currentEventSource.close();
                             currentEventSource = null; // Clear the reference
                         };
+                        currentEventSource.addEventListener('end', function(event) {
+                            const lineDiv = document.createElement('div');
+                            lineDiv.className = 'output-line';
+                            lineDiv.textContent = event.data; // This will be "Command finished successfully." or "Command exited with error: ..."
+                            outputContainer.prepend(lineDiv);
+                            currentEventSource.close();
+                            currentEventSource = null;
+                        });
 
                         // Create a new command entry (input + output div)
                         const newCommandEntry = document.createElement('div');
@@ -267,9 +275,9 @@ func executeHandler(w http.ResponseWriter, r *http.Request, dir string) {
 
 	if err := cmd.Wait(); err != nil {
 		log.Printf("Command finished with error: %v", err)
-		fmt.Fprintf(w, "data: Command exited with error: %v\n\n", err)
+		fmt.Fprintf(w, "event: end\ndata: Command exited with error: %v\n\n", err)
 	} else {
-		fmt.Fprintf(w, "data: Command finished successfully.\n\n")
+		fmt.Fprintf(w, "event: end\ndata: Command finished successfully.\n\n")
 	}
 	flusher.Flush()
 }
