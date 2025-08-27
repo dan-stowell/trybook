@@ -1,2 +1,2 @@
-# trybook
-notebooks for entire repos
+# repobook
+notebooks tracking changes, builds, and tests for entire repos
