@@ -89,11 +89,13 @@ def main():
     try:
         current_branch = repo.active_branch.name
         latest_commit_sha = repo.head.commit.hexsha
-        latest_commit_message = repo.head.commit.message.strip()
+        msg_full = repo.head.commit.message or ""
+        latest_commit_message = msg_full.splitlines()[0].strip() if msg_full else ""
     except TypeError: # Detached HEAD state
         current_branch = "detached HEAD"
         latest_commit_sha = repo.head.commit.hexsha
-        latest_commit_message = repo.head.commit.message.strip()
+        msg_full = repo.head.commit.message or ""
+        latest_commit_message = msg_full.splitlines()[0].strip() if msg_full else ""
     except Exception as e:
         print(f"Error getting Git info: {e}", file=sys.stderr)
         sys.exit(1)
@@ -137,7 +139,8 @@ def main():
             print(f"Stored branch '{new_branch_name}' with commit '{latest_commit_sha}' in database.")
 
         # Refresh latest commit message after checkout
-        latest_commit_message = repo.head.commit.message.strip()
+        _msg_full = repo.head.commit.message or ""
+        latest_commit_message = _msg_full.splitlines()[0].strip() if _msg_full else ""
 
     except git.GitCommandError as e:
         print(f"Error selecting/creating branch: {e}", file=sys.stderr)
@@ -159,7 +162,9 @@ def main():
             os.chdir(current_dir) # Change back to original directory
 
             short_sha = repo.head.commit.hexsha[:7]
-            commit_msg = html.escape(repo.head.commit.message.strip(), quote=True)
+            full_msg = repo.head.commit.message or ""
+            single_line_msg = full_msg.splitlines()[0].strip() if full_msg else ""
+            commit_msg = html.escape(single_line_msg, quote=True)
 
             status_message = f"Current Commit: {short_sha} - {commit_msg}<br>"
             if untracked_files:
@@ -202,7 +207,8 @@ def main():
             branch_segment = quote(current_branch_name, safe="")
             return RedirectResponse(url=f"/notebook/{repo_segment}/{branch_segment}", status_code=307)
 
-        latest_commit_message_current = repo.head.commit.message.strip()
+        msg_full_current = repo.head.commit.message or ""
+        latest_commit_message_current = msg_full_current.splitlines()[0].strip() if msg_full_current else ""
 
         # Load existing inputs for the current branch from DB
         conn = sqlite3.connect(db_path)
@@ -217,7 +223,9 @@ def main():
         entries_html = ""
         for input_text, commit_msg, short_sha in prior_rows:
             safe_input = html.escape(input_text or "", quote=True)
-            safe_msg = html.escape((commit_msg or "").strip(), quote=True)
+            display_msg_full = (commit_msg or "")
+            display_msg = display_msg_full.splitlines()[0].strip() if displayMsg_full := display_msg_full else ""
+            safe_msg = html.escape(display_msg, quote=True)
             safe_short = html.escape(short_sha or "", quote=True)
             entries_html += f'''
             <div class="submitted-entry">
@@ -291,7 +299,8 @@ def main():
 
             commit_sha = commit.hexsha
             short_sha = commit_sha[:7]
-            commit_message = commit.message.strip()
+            full_commit_message = commit.message or ""
+            commit_message = full_commit_message.splitlines()[0].strip() if full_commit_message else ""
             try:
                 commit_author_date = commit.authored_datetime.isoformat()
             except Exception:
