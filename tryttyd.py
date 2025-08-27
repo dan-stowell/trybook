@@ -70,6 +70,12 @@ BASE_HTML = """<!DOCTYPE html>
       padding: 1rem; border: 1px solid var(--border); border-radius: 12px; background: white;
     }}
     .entry + .entry {{ margin-top: 1rem; }}
+    /* Status-based backgrounds */
+    .entry.state-running {{ background: #fff7e6; /* neutral orange */ }}
+    .entry.state-success {{ background: #f0fff4; /* neutral green */ }}
+    .entry.state-failed  {{ background: #fff5f5; /* neutral red */ }}
+    .meta.ok {{ color: #2f9e44; font-weight: 600; }}
+    .meta.err {{ color: #c92a2a; font-weight: 600; }}
     .row {{ display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; }}
     .label {{ color: var(--muted); font-size: .9rem; }}
     .ro {{
@@ -129,13 +135,12 @@ def ensure_binaries() -> None:
 
 
 def start_tmux_session(session: str, cmd: str) -> None:
-    # Set remain-on-exit globally to preserve panes after process exit.
-    subprocess.run(["tmux", "set-option", "-g", "remain-on-exit", "on"], check=False)
-
     # Create a detached session that runs the command via bash -lc '<cmd>' to respect shell features.
     # Use shlex.quote to safely pass the command as a single string to the shell (avoid HTML escaping).
     shell_cmd = f"bash -lc {shlex.quote(cmd)}"
     subprocess.run(["tmux", "new-session", "-d", "-s", session, shell_cmd], check=True)
+    # Ensure panes do not linger with a "pane is dead" message after exit.
+    subprocess.run(["tmux", "set-option", "-t", session, "remain-on-exit", "off"], check=False)
 
 
 def start_ttyd_for_session(session: str, port: int):
@@ -148,15 +153,62 @@ def start_ttyd_for_session(session: str, port: int):
         start_new_session=True,
     )
 
+def tmux_pane_status(session: str) -> Dict[str, Any]:
+    """
+    Query tmux for the pane status of the given session using format variables.
+    Returns dict with keys: state in {"running","success","failed"}, label, code.
+    """
+    try:
+        fmt = "#{pane_dead} #{?#{pane_dead},#{pane_dead_status},-1}"
+        out = subprocess.check_output(
+            ["tmux", "display-message", "-p", "-t", session, fmt],
+            stderr=subprocess.DEVNULL,
+        )
+        parts = out.decode().strip().split()
+        dead = int(parts[0]) if parts else 0
+        status = int(parts[1]) if len(parts) > 1 else -1
+    except Exception:
+        # Session missing or tmux error -> treat as finished unknown
+        dead, status = 1, -1
 
-def entry_block_html(command: str, url: str, session: str, created: str) -> str:
-    # A read-only snapshot of the command and a link to the ttyd session.
+    if dead == 0:
+        return {"state": "running", "label": "Running…", "code": None}
+    if status == 0:
+        return {"state": "success", "label": "Succeeded", "code": 0}
+    if status > 0:
+        return {"state": "failed", "label": f"Failed ({status})", "code": status}
+    return {"state": "failed", "label": "Exited", "code": status}
+
+@app.get("/entry/{session}", response_class=HTMLResponse)
+async def entry_view(request: Request, session: str):
+    meta = SESSIONS.get(session)
+    if not meta:
+        esc = html.escape(session)
+        return f'<div class="entry state-failed"><div class="row"><b>Unknown session:</b> {esc}</div></div>'
+    hostname = request.url.hostname or "127.0.0.1"
+    url = f"http://{hostname}:{meta['port']}/"
+    st = tmux_pane_status(session)
+    return entry_block_html(meta["cmd"], url, session, meta["created"], state=st["state"], status_label=st["label"])
+
+
+def entry_block_html(command: str, url: str, session: str, created: str, state: str = "running", status_label: str = "Running…") -> str:
+    # A read-only snapshot of the command and a link to the ttyd session, with live status styling.
     esc_cmd = html.escape(command)
     esc_url = html.escape(url)
     esc_sess = html.escape(session)
     esc_created = html.escape(created)
+    esc_status = html.escape(status_label)
+
+    state_class = {
+        "running": "state-running",
+        "success": "state-success",
+        "failed": "state-failed",
+    }.get(state, "state-running")
+
+    meta_class = "ok" if state == "success" else ("err" if state == "failed" else "")
+
     return f"""
-<div class="entry">
+<div id="entry-{esc_sess}" class="entry {state_class}" hx-get="/entry/{esc_sess}" hx-trigger="load, every 1s" hx-swap="outerHTML">
   <div class="row">
     <span class="label">Command</span>
     <input class="ro" type="text" value="{esc_cmd}" readonly />
@@ -164,6 +216,10 @@ def entry_block_html(command: str, url: str, session: str, created: str) -> str:
   <div class="row" style="margin-top:.5rem;">
     <span class="label">Session</span>
     <code>{esc_sess}</code>
+  </div>
+  <div class="row" style="margin-top:.5rem;">
+    <span class="label">Status</span>
+    <span class="meta {meta_class}">{esc_status}</span>
   </div>
   <div class="row" style="margin-top:.5rem;">
     <a class="session" href="{esc_url}" target="_blank" rel="noopener noreferrer">{esc_url}</a>
