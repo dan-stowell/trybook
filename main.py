@@ -80,25 +80,49 @@ def main():
         print(f"Error getting Git info: {e}", file=sys.stderr)
         sys.exit(1)
 
-    # Create and checkout new branch
-    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-    new_branch_name = f"repobook-{timestamp}"
+    # Determine branch to use: most recent existing from DB, otherwise create new repobook-<timestamp>
     try:
-        new_branch = repo.create_head(new_branch_name)
-        new_branch.checkout()
-        print(f"Checked out new branch: {new_branch_name}")
-
-        # Store branch info in DB
+        # Fetch most recently created branches from DB
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO branches (branch_name, commit_sha) VALUES (?, ?)",
-                       (new_branch_name, latest_commit_sha))
-        conn.commit()
+        cursor.execute("SELECT branch_name FROM branches ORDER BY timestamp DESC")
+        rows = cursor.fetchall()
         conn.close()
-        print(f"Stored branch '{new_branch_name}' with commit '{latest_commit_sha}' in database.")
+
+        # Find first branch that still exists in the repo
+        existing_heads = {h.name for h in repo.heads}
+        selected_branch = None
+        for (bname,) in rows:
+            if bname in existing_heads:
+                selected_branch = bname
+                break
+
+        if selected_branch:
+            repo.git.checkout(selected_branch)
+            active_branch_name = selected_branch
+            print(f"Checked out existing branch: {active_branch_name}")
+        else:
+            timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+            new_branch_name = f"repobook-{timestamp}"
+            new_branch = repo.create_head(new_branch_name)
+            new_branch.checkout()
+            active_branch_name = new_branch_name
+            print(f"Checked out new branch: {new_branch_name}")
+
+            # Store branch info in DB
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO branches (branch_name, commit_sha) VALUES (?, ?)",
+                           (new_branch_name, latest_commit_sha))
+            conn.commit()
+            conn.close()
+            print(f"Stored branch '{new_branch_name}' with commit '{latest_commit_sha}' in database.")
+
+        # Refresh latest commit message after checkout
+        latest_commit_message = repo.head.commit.message.strip()
 
     except git.GitCommandError as e:
-        print(f"Error creating/checking out branch: {e}", file=sys.stderr)
+        print(f"Error selecting/creating branch: {e}", file=sys.stderr)
         sys.exit(1)
 
     repo_name = os.path.basename(repo_path)
@@ -167,7 +191,7 @@ def main():
         </head>
         <body>
             <h1>{repo_name}</h1>
-            <p><strong>Branch:</strong> {new_branch_name}</p>
+            <p><strong>Branch:</strong> {active_branch_name}</p>
             <p><strong>Latest Commit:</strong> {latest_commit_message}</p>
 
             <div id="input-container" hx-on:htmx:oobAfterSwap="this.querySelector(&quot;#current-input-form input[name='user_input']&quot;)?.focus()" hx-on:htmx:afterSwap="this.querySelector(&quot;#current-input-form input[name='user_input']&quot;)?.focus()">
