@@ -6,6 +6,8 @@
 import html
 import shutil
 import socket
+import os
+import signal
 import shlex
 import subprocess
 import uuid
@@ -188,6 +190,18 @@ async def entry_view(request: Request, session: str):
     hostname = request.url.hostname or "127.0.0.1"
     url = f"http://{hostname}:{meta['port']}/"
     st = tmux_pane_status(session)
+
+    # If finished, stop ttyd (best-effort) and mark done so we don't keep a stale PID around.
+    if st["state"] != "running":
+        pid = meta.get("pid")
+        if pid:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except Exception:
+                pass
+            meta["pid"] = None
+        meta["done"] = True
+
     return entry_block_html(meta["cmd"], url, session, meta["created"], state=st["state"], status_label=st["label"])
 
 
@@ -207,8 +221,17 @@ def entry_block_html(command: str, url: str, session: str, created: str, state: 
 
     meta_class = "ok" if state == "success" else ("err" if state == "failed" else "")
 
+    # Only poll while running; once finished, the returned block omits hx-get to stop polling.
+    hx_attrs = f' hx-get="/entry/{esc_sess}" hx-trigger="load, every 1s" hx-swap="outerHTML"' if state == "running" else ""
+
+    # Disable the live link once the session has finished (it likely no longer exists).
+    if state == "running":
+        link_html = f'<a class="session" href="{esc_url}" target="_blank" rel="noopener noreferrer">{esc_url}</a>'
+    else:
+        link_html = '<span class="meta">Session ended</span>'
+
     return f"""
-<div id="entry-{esc_sess}" class="entry {state_class}" hx-get="/entry/{esc_sess}" hx-trigger="load, every 1s" hx-swap="outerHTML">
+<div id="entry-{esc_sess}" class="entry {state_class}"{hx_attrs}>
   <div class="row">
     <span class="label">Command</span>
     <input class="ro" type="text" value="{esc_cmd}" readonly />
@@ -222,7 +245,7 @@ def entry_block_html(command: str, url: str, session: str, created: str, state: 
     <span class="meta {meta_class}">{esc_status}</span>
   </div>
   <div class="row" style="margin-top:.5rem;">
-    <a class="session" href="{esc_url}" target="_blank" rel="noopener noreferrer">{esc_url}</a>
+    {link_html}
   </div>
   <div class="meta" style="margin-top:.5rem;">Launched: {esc_created}</div>
 </div>
