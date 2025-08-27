@@ -3,6 +3,7 @@ import sys
 import socket
 import sqlite3
 from datetime import datetime
+import html
 import uvicorn
 from fastapi import FastAPI, Path, Form
 from fastapi.responses import HTMLResponse
@@ -115,16 +116,21 @@ def main():
 
             os.chdir(current_dir) # Change back to original directory
 
-            status_message = f"Current Commit: {repo.head.commit.hexsha[:7]} - {repo.head.commit.message.strip()}<br>"
+            short_sha = repo.head.commit.hexsha[:7]
+            commit_msg = html.escape(repo.head.commit.message.strip(), quote=True)
+
+            status_message = f"Current Commit: {short_sha} - {commit_msg}<br>"
             if untracked_files:
-                status_message += f"Untracked files: {', '.join(untracked_files)}<br>"
+                safe_untracked = ", ".join(html.escape(f, quote=True) for f in untracked_files)
+                status_message += f"Untracked files: {safe_untracked}<br>"
             if changed_files:
-                status_message += f"Changed files: {', '.join(changed_files)}<br>"
+                safe_changed = ", ".join(html.escape(f, quote=True) for f in changed_files)
+                status_message += f"Changed files: {safe_changed}<br>"
             if not untracked_files and not changed_files:
                 status_message += "No untracked or changed files."
             return status_message
         except Exception as e:
-            return f"Error getting repo status: {e}"
+            return f"Error getting repo status: {html.escape(str(e), quote=True)}"
 
     @app.get("/", response_class=HTMLResponse)
     async def read_root():
@@ -166,7 +172,7 @@ def main():
             <div id="input-container">
                 <div class="input-entry" id="current-input-form">
                     <form hx-post="/submit_input" hx-target="#current-input-form" hx-swap="outerHTML">
-                        <input type="text" name="user_input" placeholder="Enter your thoughts here..." hx-trigger="keyup[keyCode==13]" autofocus />
+                        <input type="text" name="user_input" placeholder="Enter your thoughts here..." autocomplete="off" autofocus />
                     </form>
                 </div>
             </div>
@@ -188,24 +194,29 @@ def main():
             # Get updated repo status
             updated_status = get_repo_status()
 
-            # Return HTML for the just-submitted input (now read-only) and the status message
-            # Also, use hx-swap-oob to place the new active input field
+            # Safely echo the input back into the HTML attribute
+            safe_input = html.escape(user_input, quote=True)
+
+            # Return HTML for the just-submitted input (now read-only) and the status message.
+            # Also, use hx-swap-oob to append a new active input field at the end of #input-container.
             return HTMLResponse(content=f"""
             <div class="input-entry">
-                <input type="text" name="user_input_readonly" value="{user_input}" readonly />
+                <input type="text" name="user_input_readonly" value="{safe_input}" readonly />
             </div>
             <div class="status-message">
                 {updated_status}
             </div>
-            <div class="input-entry" id="current-input-form" hx-swap-oob="true">
-                <form hx-post="/submit_input" hx-target="#current-input-form" hx-swap="outerHTML">
-                    <input type="text" name="user_input" placeholder="Enter more thoughts here..." hx-trigger="keyup[keyCode==13]" autofocus />
-                </form>
+            <div id="input-container" hx-swap-oob="beforeend">
+                <div class="input-entry" id="current-input-form">
+                    <form hx-post="/submit_input" hx-target="#current-input-form" hx-swap="outerHTML">
+                        <input type="text" name="user_input" placeholder="Enter more thoughts here..." autocomplete="off" autofocus />
+                    </form>
+                </div>
             </div>
             """)
         except Exception as e:
             print(f"Error recording input: {e}", file=sys.stderr)
-            return HTMLResponse(content=f"Error recording input: {e}", status_code=500)
+            return HTMLResponse(content=f"Error recording input: {html.escape(str(e), quote=True)}", status_code=500)
 
     port = get_free_port()
     print(f"Starting Repobook server on http://127.0.0.1:{port}")
