@@ -104,8 +104,31 @@ def main():
 
     app = FastAPI()
 
+    def get_repo_status():
+        try:
+            # Ensure we are in the correct directory for git commands
+            current_dir = os.getcwd()
+            os.chdir(repo_path)
+
+            untracked_files = repo.untracked_files
+            changed_files = [item.a_path for item in repo.index.diff(None)]
+
+            os.chdir(current_dir) # Change back to original directory
+
+            status_message = f"Current Commit: {repo.head.commit.hexsha[:7]} - {repo.head.commit.message.strip()}<br>"
+            if untracked_files:
+                status_message += f"Untracked files: {', '.join(untracked_files)}<br>"
+            if changed_files:
+                status_message += f"Changed files: {', '.join(changed_files)}<br>"
+            if not untracked_files and not changed_files:
+                status_message += "No untracked or changed files."
+            return status_message
+        except Exception as e:
+            return f"Error getting repo status: {e}"
+
     @app.get("/", response_class=HTMLResponse)
     async def read_root():
+        initial_status = get_repo_status()
         html_content = f"""
         <!DOCTYPE html>
         <html>
@@ -124,6 +147,15 @@ def main():
                     border: 1px solid #ccc;
                     border-radius: 4px;
                 }}
+                .status-message {{
+                    margin-top: 1em;
+                    padding: 0.8em;
+                    background-color: #f0f0f0;
+                    border: 1px solid #ddd;
+                    border-radius: 4px;
+                    font-size: 0.9em;
+                    color: #555;
+                }}
             </style>
         </head>
         <body>
@@ -131,11 +163,12 @@ def main():
             <p><strong>Branch:</strong> {new_branch_name}</p>
             <p><strong>Latest Commit:</strong> {latest_commit_message}</p>
 
-            <div class="input-form">
-                <form hx-post="/submit_input" hx-target="#input-feedback" hx-swap="innerHTML" hx-on--after-request="this.reset()">
-                    <input type="text" name="user_input" placeholder="Enter your thoughts here..." hx-trigger="keyup[keyCode==13]" />
-                </form>
-                <div id="input-feedback" style="color: green; margin-top: 0.5em;"></div>
+            <div id="input-section">
+                <div class="input-form">
+                    <form hx-post="/submit_input" hx-target="#input-section" hx-swap="outerHTML">
+                        <input type="text" name="user_input" placeholder="Enter your thoughts here..." hx-trigger="keyup[keyCode==13]" />
+                    </form>
+                </div>
             </div>
         </body>
         </html>
@@ -148,13 +181,32 @@ def main():
             conn = sqlite3.connect(db_path)
             cursor = conn.cursor()
             cursor.execute("INSERT INTO raw_inputs (input_text, commit_sha) VALUES (?, ?)",
-                           (user_input, latest_commit_sha))
+                           (user_input, repo.head.commit.hexsha)) # Use current commit SHA
             conn.commit()
             conn.close()
-            return HTMLResponse(content="Input recorded!")
+
+            # Get updated repo status
+            updated_status = get_repo_status()
+
+            # Return new HTML for the input section
+            return HTMLResponse(content=f"""
+            <div id="input-section">
+                <div class="input-form">
+                    <input type="text" name="user_input" value="{user_input}" readonly />
+                </div>
+                <div class="status-message">
+                    {updated_status}
+                </div>
+                <div class="input-form">
+                    <form hx-post="/submit_input" hx-target="#input-section" hx-swap="outerHTML">
+                        <input type="text" name="user_input" placeholder="Enter more thoughts here..." hx-trigger="keyup[keyCode==13]" autofocus />
+                    </form>
+                </div>
+            </div>
+            """)
         except Exception as e:
             print(f"Error recording input: {e}", file=sys.stderr)
-            return HTMLResponse(content="Error recording input.", status_code=500)
+            return HTMLResponse(content=f"Error recording input: {e}", status_code=500)
 
     port = get_free_port()
     print(f"Starting Repobook server on http://127.0.0.1:{port}")
