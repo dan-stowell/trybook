@@ -1,0 +1,7 @@
+[project]
+name = "repobook"
+version = "0.1.0"
+description = "notebooks for entire repos: track builds, tests, changes"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = []
