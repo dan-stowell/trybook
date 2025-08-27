@@ -327,7 +327,7 @@ def main():
                 if something:
                     try:
                         output_base = f"/tmp/output_base/{repo_name}"
-                        query_pattern = f"//...*{something}*"
+                        query_pattern = f'filter("{something}", //...)'
                         cmd = [
                             "bazel",
                             f"--output_base={output_base}",
