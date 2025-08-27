@@ -4,6 +4,7 @@ import socket
 import sqlite3
 from datetime import datetime
 import html
+import subprocess
 import uvicorn
 from fastapi import FastAPI, Path, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -318,6 +319,57 @@ def main():
             # Get updated repo status
             updated_status = get_repo_status()
 
+            # Optionally run a Bazel query if the input starts with 'q '
+            bazel_html = ""
+            stripped = user_input.lstrip()
+            if stripped.startswith("q "):
+                something = stripped[2:].strip()
+                if something:
+                    try:
+                        output_base = f"/tmp/output_base/{repo_name}"
+                        query_pattern = f"//...*{something}*"
+                        cmd = [
+                            "bazel",
+                            f"--output_base={output_base}",
+                            "query",
+                            query_pattern,
+                            "--disk_cache=/tmp/disk_cache",
+                            "--repository_cache=/tmp/repository_cache",
+                            "--config=cache",
+                        ]
+                        result = subprocess.run(
+                            cmd,
+                            cwd=repo_path,
+                            capture_output=True,
+                            text=True,
+                            timeout=60,
+                        )
+                        out = result.stdout.strip()
+                        err = result.stderr.strip()
+                        exit_code = result.returncode
+                        combined = out if out else err
+                        if not combined:
+                            combined = "(no output)"
+                        if len(combined) > 4000:
+                            combined = combined[:4000] + "\n... (truncated) ..."
+                        safe_combined = html.escape(combined, quote=True)
+                        safe_cmd = html.escape(" ".join(cmd), quote=True)
+                        bazel_html = f'''
+                <div class="status-message">
+                    Bazel query exit code {exit_code}<br>
+                    <code>{safe_cmd}</code>
+                    <pre style="white-space: pre-wrap;">{safe_combined}</pre>
+                </div>'''
+                    except FileNotFoundError:
+                        bazel_html = '''
+                <div class="status-message">Bazel not found on PATH.</div>'''
+                    except subprocess.TimeoutExpired:
+                        bazel_html = '''
+                <div class="status-message">Bazel query timed out.</div>'''
+                    except Exception as be:
+                        bazel_html = f'''
+                <div class="status-message">Bazel query error: {html.escape(str(be), quote=True)}</div>'''
+
             # Safely echo the input back into the HTML attribute
             safe_input = html.escape(user_input, quote=True)
 
@@ -331,6 +383,7 @@ def main():
                 <div class="status-message">
                     {updated_status}
                 </div>
+                {bazel_html}
             </div>
             <div id="input-container" hx-swap-oob="beforeend">
                 <div class="input-entry" id="current-input-form">
