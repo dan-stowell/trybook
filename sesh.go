@@ -70,12 +70,11 @@ func indexHandler(w http.ResponseWriter, r *http.Request, dir string) {
             padding: 10px;
             margin-top: 5px;
             margin-bottom: 10px;
-            min-height: 60px; /* Enough for 3 lines of text */
+            min-height: 60px; /* Minimum height for output */
             font-family: monospace;
             white-space: pre-wrap; /* Preserve whitespace and wrap text */
-            overflow: hidden; /* Hide overflow if more than 3 lines */
-            display: flex;
-            flex-direction: column-reverse; /* Show last lines at the bottom */
+            overflow-y: auto; /* Enable scrolling for overflow */
+            max-height: 200px; /* Example max height, adjust as needed */
         }
         .output-line {
             padding: 2px 0;
@@ -97,7 +96,6 @@ func indexHandler(w http.ResponseWriter, r *http.Request, dir string) {
     <script>
         document.addEventListener('DOMContentLoaded', function() {
             const sessionLog = document.getElementById('session-log');
-            const maxOutputLines = 3;
             let currentEventSource = null; // To hold the SSE connection for the active command
 
             function setupInput(inputElement) {
@@ -131,12 +129,7 @@ func indexHandler(w http.ResponseWriter, r *http.Request, dir string) {
                             const lineDiv = document.createElement('div');
                             lineDiv.className = 'output-line';
                             lineDiv.textContent = event.data;
-                            outputContainer.prepend(lineDiv); // Add to top to maintain reverse order
-
-                            // Remove old lines if exceeding max
-                            while (outputContainer.children.length > maxOutputLines) {
-                                outputContainer.removeChild(outputContainer.lastChild);
-                            }
+                            outputContainer.appendChild(lineDiv); // Append to display all lines
                         };
                         currentEventSource.onerror = function(err) {
                             console.error('EventSource failed:', err);
@@ -145,7 +138,7 @@ func indexHandler(w http.ResponseWriter, r *http.Request, dir string) {
                                 const lineDiv = document.createElement('div');
                                 lineDiv.className = 'output-line';
                                 lineDiv.textContent = "EventSource connection failed.";
-                                outputContainer.prepend(lineDiv);
+                                outputContainer.appendChild(lineDiv);
                             }
                             currentEventSource.close();
                             currentEventSource = null; // Clear the reference
@@ -156,7 +149,7 @@ func indexHandler(w http.ResponseWriter, r *http.Request, dir string) {
                             const lineDiv = document.createElement('div');
                             lineDiv.className = 'output-line';
                             lineDiv.textContent = event.data; // This will be "Command finished successfully." or "Command exited with error: ..."
-                            outputContainer.prepend(lineDiv);
+                            outputContainer.appendChild(lineDiv);
                             currentEventSource.close();
                             currentEventSource = null;
                         });
