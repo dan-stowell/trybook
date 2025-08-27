@@ -59,9 +59,26 @@ def main():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 input_text TEXT NOT NULL,
                 commit_sha TEXT NOT NULL,
+                branch_name TEXT,
+                commit_message TEXT,
+                commit_author_date DATETIME,
+                short_sha TEXT,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+        # Backfill schema for existing databases: add columns if missing
+        cursor.execute("PRAGMA table_info(raw_inputs)")
+        existing_cols = {row[1] for row in cursor.fetchall()}
+        schema_adds = [
+            ("branch_name", "TEXT"),
+            ("commit_message", "TEXT"),
+            ("commit_author_date", "DATETIME"),
+            ("short_sha", "TEXT"),
+        ]
+        for col_name, col_type in schema_adds:
+            if col_name not in existing_cols:
+                cursor.execute(f"ALTER TABLE raw_inputs ADD COLUMN {col_name} {col_type}")
+
         conn.commit()
         conn.close()
 
@@ -209,10 +226,28 @@ def main():
     @app.post("/submit_input")
     async def submit_input(user_input: str = Form(...)):
         try:
+            commit = repo.head.commit
+            try:
+                branch_name = repo.active_branch.name
+            except TypeError:
+                branch_name = "detached HEAD"
+            except Exception:
+                branch_name = "unknown"
+
+            commit_sha = commit.hexsha
+            short_sha = commit_sha[:7]
+            commit_message = commit.message.strip()
+            try:
+                commit_author_date = commit.authored_datetime.isoformat()
+            except Exception:
+                commit_author_date = datetime.fromtimestamp(commit.authored_date).isoformat()
+
             conn = sqlite3.connect(db_path)
             cursor = conn.cursor()
-            cursor.execute("INSERT INTO raw_inputs (input_text, commit_sha) VALUES (?, ?)",
-                           (user_input, repo.head.commit.hexsha)) # Use current commit SHA
+            cursor.execute(
+                "INSERT INTO raw_inputs (input_text, commit_sha, branch_name, commit_message, commit_author_date, short_sha) VALUES (?, ?, ?, ?, ?, ?)",
+                (user_input, commit_sha, branch_name, commit_message, commit_author_date, short_sha)
+            )
             conn.commit()
             conn.close()
 
