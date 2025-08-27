@@ -14,7 +14,6 @@ import (
 	"io"
 	"strings"
 	"sync"
-	"time"
 )
 
 // PageData holds the data for the HTML template.
