@@ -10,12 +10,16 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"bufio"
+	"io"
 	"strings"
+	"sync"
+	"time"
 )
 
 // PageData holds the data for the HTML template.
 type PageData struct {
-	RepoName  string
+	RepoName   string
 	BranchName string
 }
 
@@ -43,7 +47,7 @@ func getBranchName(dir string) string {
 // indexHandler serves the main HTML page.
 func indexHandler(w http.ResponseWriter, r *http.Request, dir string) {
 	data := PageData{
-		RepoName:  getRepoName(dir),
+		RepoName:   getRepoName(dir),
 		BranchName: getBranchName(dir),
 	}
 
@@ -61,6 +65,21 @@ func indexHandler(w http.ResponseWriter, r *http.Request, dir string) {
             font-size: 1.2em;
             box-sizing: border-box; /* Include padding in width */
         }
+        #output-container {
+            background-color: #f0f0f0;
+            border: 1px solid #ccc;
+            padding: 10px;
+            margin-top: 10px;
+            min-height: 60px; /* Enough for 3 lines of text */
+            font-family: monospace;
+            white-space: pre-wrap; /* Preserve whitespace and wrap text */
+            overflow: hidden; /* Hide overflow if more than 3 lines */
+            display: flex;
+            flex-direction: column-reverse; /* Show last lines at the bottom */
+        }
+        .output-line {
+            padding: 2px 0;
+        }
     </style>
 </head>
 <body>
@@ -68,24 +87,65 @@ func indexHandler(w http.ResponseWriter, r *http.Request, dir string) {
     <div id="input-container">
         <input type="text" class="sesh-input" placeholder="Type your command here..." autofocus>
     </div>
+    <div id="output-container"></div>
 
     <script>
         document.addEventListener('DOMContentLoaded', function() {
+            const outputContainer = document.getElementById('output-container');
+            const maxOutputLines = 3;
+            let eventSource = null; // To hold the SSE connection
+
+            function addOutputLine(line) {
+                const lineDiv = document.createElement('div');
+                lineDiv.className = 'output-line';
+                lineDiv.textContent = line;
+                outputContainer.prepend(lineDiv); // Add to top to maintain reverse order
+
+                // Remove old lines if exceeding max
+                while (outputContainer.children.length > maxOutputLines) {
+                    outputContainer.removeChild(outputContainer.lastChild);
+                }
+            }
+
             function setupInput(inputElement) {
                 inputElement.addEventListener('keydown', function(event) {
                     if (event.key === 'Enter') {
-                        event.preventDefault(); // Prevent default form submission
+                        event.preventDefault();
                         const currentInput = event.target;
-                        const inputValue = currentInput.value;
+                        const inputValue = currentInput.value.trim();
+
+                        if (inputValue === '') {
+                            return; // Don't process empty commands
+                        }
 
                         // Make current input read-only
                         currentInput.setAttribute('readonly', true);
-                        currentInput.blur(); // Remove focus from the current input
+                        currentInput.blur();
 
                         // Echo the input value
                         const echoDiv = document.createElement('div');
                         echoDiv.textContent = '> ' + inputValue;
                         currentInput.parentNode.insertBefore(echoDiv, currentInput.nextSibling);
+
+                        // Clear previous output
+                        outputContainer.innerHTML = '';
+
+                        // Close existing EventSource if any
+                        if (eventSource) {
+                            eventSource.close();
+                        }
+
+                        // Send command to backend and open SSE for output
+                        eventSource = new EventSource(`/execute?cmd=${encodeURIComponent(inputValue)}`);
+                        eventSource.onmessage = function(event) {
+                            addOutputLine(event.data);
+                        };
+                        eventSource.onerror = function(err) {
+                            console.error('EventSource failed:', err);
+                            eventSource.close();
+                            addOutputLine("Command finished or failed.");
+                            // Re-enable input or show error
+                        };
 
                         // Create a new input field
                         const newInput = document.createElement('input');
@@ -99,6 +159,7 @@ func indexHandler(w http.ResponseWriter, r *http.Request, dir string) {
 
                         // Focus on the new input field
                         newInput.focus();
+                        setupInput(newInput); // Setup event listener for the new input
                     }
                 });
             }
@@ -116,6 +177,88 @@ func indexHandler(w http.ResponseWriter, r *http.Request, dir string) {
 	tmpl.Execute(w, data)
 }
 
+// executeHandler handles command execution and streams output via SSE.
+func executeHandler(w http.ResponseWriter, r *http.Request, dir string) {
+	cmdStr := r.URL.Query().Get("cmd")
+	if cmdStr == "" {
+		http.Error(w, "Command not provided", http.StatusBadRequest)
+		return
+	}
+
+	// Set up SSE headers
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*") // Allow CORS for development
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming unsupported!", http.StatusInternalServerError)
+		return
+	}
+
+	parts := strings.Fields(cmdStr)
+	if len(parts) == 0 {
+		return // Should be caught by cmdStr == "" check, but good for safety
+	}
+
+	cmd := exec.Command(parts[0], parts[1:]...)
+	cmd.Dir = dir // Set the working directory for the command
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		log.Printf("Error creating stdout pipe: %v", err)
+		fmt.Fprintf(w, "data: Error: %v\n\n", err)
+		flusher.Flush()
+		return
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		log.Printf("Error creating stderr pipe: %v", err)
+		fmt.Fprintf(w, "data: Error: %v\n\n", err)
+		flusher.Flush()
+		return
+	}
+
+	if err := cmd.Start(); err != nil {
+		log.Printf("Error starting command: %v", err)
+		fmt.Fprintf(w, "data: Error: %v\n\n", err)
+		flusher.Flush()
+		return
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// Function to read from a pipe and send as SSE
+	streamOutput := func(reader io.Reader) {
+		defer wg.Done()
+		scanner := bufio.NewScanner(reader)
+		for scanner.Scan() {
+			line := scanner.Text()
+			fmt.Fprintf(w, "data: %s\n\n", line)
+			flusher.Flush()
+			time.Sleep(5 * time.Millisecond) // Small delay to ensure client can keep up
+		}
+		if err := scanner.Err(); err != nil {
+			log.Printf("Error reading from pipe: %v", err)
+		}
+	}
+
+	go streamOutput(stdout)
+	go streamOutput(stderr)
+
+	wg.Wait() // Wait for both stdout and stderr to finish
+
+	if err := cmd.Wait(); err != nil {
+		log.Printf("Command finished with error: %v", err)
+		fmt.Fprintf(w, "data: Command exited with error: %v\n\n", err)
+	} else {
+		fmt.Fprintf(w, "data: Command finished successfully.\n\n")
+	}
+	flusher.Flush()
+}
+
 func main() {
 	dir := flag.String("dir", ".", "Directory to check (default is current directory)")
 	flag.Parse()
@@ -129,6 +272,9 @@ func main() {
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		indexHandler(w, r, *dir)
+	})
+	http.HandleFunc("/execute", func(w http.ResponseWriter, r *http.Request) {
+		executeHandler(w, r, *dir)
 	})
 
 	port := ":8080"
