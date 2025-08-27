@@ -65,6 +65,8 @@ def main():
                 commit_message TEXT,
                 commit_author_date DATETIME,
                 short_sha TEXT,
+                bazel_stdout TEXT,
+                bazel_stderr TEXT,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         ''')
@@ -76,6 +78,8 @@ def main():
             ("commit_message", "TEXT"),
             ("commit_author_date", "DATETIME"),
             ("short_sha", "TEXT"),
+            ("bazel_stdout", "TEXT"),
+            ("bazel_stderr", "TEXT"),
         ]
         for col_name, col_type in schema_adds:
             if col_name not in existing_cols:
@@ -215,19 +219,40 @@ def main():
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT input_text, commit_message, short_sha FROM raw_inputs WHERE branch_name = ? ORDER BY id ASC",
+            "SELECT input_text, commit_message, short_sha, bazel_stdout, bazel_stderr FROM raw_inputs WHERE branch_name = ? ORDER BY id ASC",
             (current_branch_name,),
         )
         prior_rows = cursor.fetchall()
         conn.close()
 
         entries_html = ""
-        for input_text, commit_msg, short_sha in prior_rows:
+        for input_text, commit_msg, short_sha, bazel_stdout, bazel_stderr in prior_rows:
             safe_input = html.escape(input_text or "", quote=True)
             display_msg_full = (commit_msg or "")
             display_msg = display_msg_full.splitlines()[0].strip() if display_msg_full else ""
             safe_msg = html.escape(display_msg, quote=True)
             safe_short = html.escape(short_sha or "", quote=True)
+
+            bazel_block = ""
+            if (bazel_stdout and bazel_stdout.strip()) or (bazel_stderr and bazel_stderr.strip()):
+                out = (bazel_stdout or "").strip()
+                err = (bazel_stderr or "").strip()
+                # Trim overly long outputs for page load
+                if len(out) > 4000:
+                    out = out[:4000] + "\n... (truncated) ..."
+                if len(err) > 4000:
+                    err = err[:4000] + "\n... (truncated) ..."
+                safe_out = html.escape(out, quote=True)
+                safe_err = html.escape(err, quote=True)
+                bazel_block = f'''
+                <div class="status-message">
+                    <strong>Bazel query output</strong>
+                    <div><em>stdout</em></div>
+                    <pre style="white-space: pre-wrap;">{safe_out or "(no stdout)"}</pre>
+                    <div><em>stderr</em></div>
+                    <pre style="white-space: pre-wrap;">{safe_err or "(no stderr)"}</pre>
+                </div>'''
+
             entries_html += f'''
             <div class="submitted-entry">
                 <div class="input-entry">
@@ -236,6 +261,7 @@ def main():
                 <div class="status-message">
                     Commit: {safe_short} - {safe_msg}
                 </div>
+                {bazel_block}
             </div>
             '''
 
@@ -307,20 +333,10 @@ def main():
             except Exception:
                 commit_author_date = datetime.fromtimestamp(commit.authored_date).isoformat()
 
-            conn = sqlite3.connect(db_path)
-            cursor = conn.cursor()
-            cursor.execute(
-                "INSERT INTO raw_inputs (input_text, commit_sha, branch_name, commit_message, commit_author_date, short_sha) VALUES (?, ?, ?, ?, ?, ?)",
-                (user_input, commit_sha, branch_name, commit_message, commit_author_date, short_sha)
-            )
-            conn.commit()
-            conn.close()
-
-            # Get updated repo status
-            updated_status = get_repo_status()
-
-            # Optionally run a Bazel query if the input starts with 'q '
+            # Prepare optional Bazel query execution if input starts with 'q '
             bazel_html = ""
+            bazel_stdout = None
+            bazel_stderr = None
             stripped = user_input.lstrip()
             if stripped.startswith("q "):
                 something = stripped[2:].strip()
@@ -344,9 +360,12 @@ def main():
                             text=True,
                             timeout=60,
                         )
-                        out = result.stdout.strip()
-                        err = result.stderr.strip()
+                        out = (result.stdout or "").strip()
+                        err = (result.stderr or "").strip()
+                        bazel_stdout = out
+                        bazel_stderr = err
                         exit_code = result.returncode
+
                         combined = out if out else err
                         if not combined:
                             combined = "(no output)"
@@ -361,14 +380,32 @@ def main():
                     <pre style="white-space: pre-wrap;">{safe_combined}</pre>
                 </div>'''
                     except FileNotFoundError:
+                        bazel_stderr = "Bazel not found on PATH."
                         bazel_html = '''
                 <div class="status-message">Bazel not found on PATH.</div>'''
                     except subprocess.TimeoutExpired:
+                        bazel_stderr = "Bazel query timed out."
                         bazel_html = '''
                 <div class="status-message">Bazel query timed out.</div>'''
                     except Exception as be:
+                        bazel_stderr = str(be)
                         bazel_html = f'''
                 <div class="status-message">Bazel query error: {html.escape(str(be), quote=True)}</div>'''
+
+            # Record input and any bazel outputs in DB
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO raw_inputs (input_text, commit_sha, branch_name, commit_message, commit_author_date, short_sha, bazel_stdout, bazel_stderr) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (user_input, commit_sha, branch_name, commit_message, commit_author_date, short_sha, bazel_stdout, bazel_stderr)
+            )
+            conn.commit()
+            conn.close()
+
+            # Get updated repo status
+            updated_status = get_repo_status()
+
+            # Bazel output already processed above
 
             # Safely echo the input back into the HTML attribute
             safe_input = html.escape(user_input, quote=True)
