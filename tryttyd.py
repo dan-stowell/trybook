@@ -137,11 +137,18 @@ def ensure_binaries() -> None:
 
 
 def start_tmux_session(session: str, cmd: str) -> None:
-    # Create a detached session that runs the command via bash -lc '<cmd>' to respect shell features.
-    # Use shlex.quote to safely pass the command as a single string to the shell (avoid HTML escaping).
-    shell_cmd = f"bash -lc {shlex.quote(cmd)}"
+    # Run the command, record its exit code, then keep the pane alive with an interactive bash.
+    # This lets ttyd stay attached even if the command exits immediately.
+    status_file = f"/tmp/{session}.status"
+    wrapper = f"""
+{cmd}
+code=$?
+printf %d "$code" > {shlex.quote(status_file)}
+exec bash
+""".strip()
+    shell_cmd = f"bash -lc {shlex.quote(wrapper)}"
     subprocess.run(["tmux", "new-session", "-d", "-s", session, shell_cmd], check=True)
-    # Ensure panes do not linger with a "pane is dead" message after exit.
+    # Pane will remain alive due to 'exec bash'; keep remain-on-exit off to avoid dead-pane messages.
     subprocess.run(["tmux", "set-option", "-t", session, "remain-on-exit", "off"], check=False)
 
 
@@ -157,9 +164,24 @@ def start_ttyd_for_session(session: str, port: int):
 
 def tmux_pane_status(session: str) -> Dict[str, Any]:
     """
-    Query tmux for the pane status of the given session using format variables.
+    Determine command status.
+    Prefer a per-session status file written by our wrapper; otherwise fall back to tmux pane state.
     Returns dict with keys: state in {"running","success","failed"}, label, code.
     """
+    # First, check if our wrapper has written an exit status.
+    status_file = f"/tmp/{session}.status"
+    if os.path.exists(status_file):
+        try:
+            with open(status_file) as f:
+                txt = (f.read() or "").strip()
+                code = int(txt) if txt != "" else -1
+        except Exception:
+            code = -1
+        if code == 0:
+            return {"state": "success", "label": "Succeeded", "code": 0}
+        return {"state": "failed", "label": f"Failed ({code})" if code >= 0 else "Exited", "code": code}
+
+    # Fallback: ask tmux about the pane state.
     try:
         fmt = "#{pane_dead} #{?#{pane_dead},#{pane_dead_status},-1}"
         out = subprocess.check_output(
@@ -170,8 +192,8 @@ def tmux_pane_status(session: str) -> Dict[str, Any]:
         dead = int(parts[0]) if parts else 0
         status = int(parts[1]) if len(parts) > 1 else -1
     except Exception:
-        # Session missing or tmux error -> treat as finished unknown
-        dead, status = 1, -1
+        # Session missing or tmux error -> unknown; treat as finished
+        return {"state": "failed", "label": "Exited", "code": -1}
 
     if dead == 0:
         return {"state": "running", "label": "Running…", "code": None}
@@ -191,16 +213,7 @@ async def entry_view(request: Request, session: str):
     url = f"http://{hostname}:{meta['port']}/"
     st = tmux_pane_status(session)
 
-    # If finished, stop ttyd (best-effort) and mark done so we don't keep a stale PID around.
-    if st["state"] != "running":
-        pid = meta.get("pid")
-        if pid:
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except Exception:
-                pass
-            meta["pid"] = None
-        meta["done"] = True
+    # Keep ttyd alive after the command finishes so the terminal remains accessible.
 
     return entry_block_html(meta["cmd"], url, session, meta["created"], state=st["state"], status_label=st["label"])
 
@@ -224,11 +237,8 @@ def entry_block_html(command: str, url: str, session: str, created: str, state: 
     # Only poll while running; once finished, the returned block omits hx-get to stop polling.
     hx_attrs = f' hx-get="/entry/{esc_sess}" hx-trigger="load, every 1s" hx-swap="outerHTML"' if state == "running" else ""
 
-    # Disable the live link once the session has finished (it likely no longer exists).
-    if state == "running":
-        link_html = f'<a class="session" href="{esc_url}" target="_blank" rel="noopener noreferrer">{esc_url}</a>'
-    else:
-        link_html = '<span class="meta">Session ended</span>'
+    # Keep the live link available even after the command ends (pane remains alive with exec bash).
+    link_html = f'<a class="session" href="{esc_url}" target="_blank" rel="noopener noreferrer">{esc_url}</a>'
 
     return f"""
 <div id="entry-{esc_sess}" class="entry {state_class}"{hx_attrs}>
